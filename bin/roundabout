@@ -1,59 +1,96 @@
 #!/usr/bin/env bash
 
-VERSION="0.0.20220425"
+VERSION="0.1.20220830"
 
 USAGE="""
 roundabout is for annotating complete plasmids and determining sections of identity to other similar plasmids.
 
-Hopeful to view them with circos or something.
+This bash script is kept for sentimental reasons.
 
 Usage:
 
 roundabout -d <directory of plasmids>
+
+Options:
+-d : (required) <directory of plasmids>
+-m : singularity (default) or docker
+-o : output directory (default : roundabout)
+-c : (optional) specify config file
+-v : print version and exit
+-t : use tower (default : off)
+-r : do not resume (default : resume)
+-n : other nextflow options
 """
 
-roundaboutpath=$(which $0 | sed 's/bin\/roundabout//g')
+echo "$(date) : starting roundabout "
 
-threads=4
-out="./"
-conf=$roundaboutpath/conf/template.conf
-circos=""
-gff_directory=""
-amrfinder_directory=""
-while getopts "hvd:t:g:a:" opt
+roundaboutpath=$(which $0 | sed 's/bin\/roundabout//g')
+manager='singularity'
+out='roundabout'
+config=""
+tower=""
+resume="-resume"
+nextflow_options=""
+directory=""
+
+while getopts "hvd:o:m:trn:" opt
 do
   case ${opt} in
     h )
       echo "$USAGE"
       exit 0
       ;;
-    v )
-      blastn -version
-      bedtools --version
-      samtools --version
-      circos --version
-      echo "roundabout $VERSION"
-      exit 0
-      ;;
     d )
-      directory=$OPTARG
-      if [ ! -d "$directory" ] ; then echo "FATAL : directory with fastas does not exist. Set with '-d'" ; fi
-      ;;
-    g )
-      gff_directory=$OPTARG
-      if [ ! -d "$gff_directory" ] ; then echo "FATAL : directory with gff files does not exist. Set with '-g'" ; fi
-      ;;
-    a )
-      amrfinder_directory=$OPTARG
-      if [ ! -d "$amrfinder_directory" ] ; then echo "FATAL : directory with amrfinder results. Set with '-a'" ; fi
-      ;;
-    t )
-      threads=$OPTARG
+      if [ -d "$OPTARG" ]
+      then
+        directory=$OPTARG
+        echo "$(date) : directory with plasmids is $directory"
+      else
+        "$(date) : FATAL : directory with fastas does not exist. Set with '-d'"
+        exit 1 
+      fi
       ;;
     o )
       out=$OPTARG
-      mkdir -p $out/roundabout
-      if [ -d "$out/roundabout" ] ; then echo "FATAL : Could not create directory for results" ; fi
+      echo "$(date) : final files will be saved in $out"
+      ;;
+    v )
+      echo "roundabout v.$VERSION"
+      exit 0
+      ;;
+    m )
+      if [ "$OPTARG" == "singularity" ]
+      then
+        manager=singularity
+      elif [ "$OPTARG" == "docker" ]
+      then
+        manager=docker
+      else
+        echo "$(date) : FATAL : container manager not recognized. Must be 'singularity' or 'docker'"
+        exit 1
+      fi
+      ;;
+    c )
+      if [ -f "$OPTARG" ]
+      then
+        config_file="-c $OPTARG"
+        echo "$(date) : additional config file found : $config_file"
+      else 
+        echo "$(date) : FATAL : config file does not exist!"
+        exit 1
+      fi
+      ;;
+      t )
+        echo "$(date) : using nextflow tower"
+        tower="-with-tower"
+      ;;
+      r )
+        echo "$(date) : will not resume"
+        resume=""
+      ;;
+      n )
+        echo "$(date) : adding additonal nextflow options : $OPTARG"
+        nextflow_options="$OPTARG"
       ;;
     \? )
       echo "$USAGE"
@@ -63,185 +100,24 @@ do
 done
 shift $((OPTIND -1))
 
-if [ -z "$(which blastn)" ]   ; then echo "FATAL : blastn was not found"   ; exit 1       ; fi
-if [ -z "$(which bedtools)" ] ; then echo "FATAL : bedtools was not found" ; exit 1       ; fi
-if [ -z "$(which samtools)" ] ; then echo "FATAL : samtools was not found" ; exit 1       ; fi
-if [ -z "$(which circos)" ]   ; then echo "WARNING : circos was not found" ; circos="not" ; fi
+if [ -z "$(which nextflow)" ] ; then echo "$(date): FATAL : nextflow was not found" ; exit 1 ; fi
+if [ -z "$(which $manager)" ] ; then echo "$(date): FATAL : container manager not found" ; exit 1 ; fi
 
-mkdir -p $out/roundabout/blast_results
-mkdir -p $out/roundabout/beds
-mkdir -p $out/roundabout/circos
+if [ ! -d "$directory" ]
+then
+  "$(date) : FATAL : directory with fastas does not exist. Set with '-d'"
+  echo "$USAGE"
+  exit 1 
+fi
 
-if [ -n "$amrfinder_directory" ] ; then conf=$roundaboutpath/conf/template_amr.conf ; fi
-echo "$(date) : conf file is $conf"
+echo "$(date) : starting workflow"
+nextflow run $roundaboutpath/nextflow \
+  -profile $manager \
+  --outdir $out \
+  $config_file \
+  --plasmid_directory $directory \
+  $tower \
+  $resume \
+  $nextflow_options
 
-echo "$(date) : getting fastas ready"
-prefastas=$(ls $directory/*{.fasta,.fa,.fna} 2> /dev/null)
-for fasta in ${prefastas[@]}
-do
-  name=$(basename $fasta | sed 's/.f.*//g')
-  echo "$(date) : formating $fasta"
-  fold -w 75 $fasta | sed "s/>/>${name}_/g" > $out/roundabout/blast_results/$name.fasta
-
-  echo "$(date) : getting size of $fasta"
-  samtools faidx $out/roundabout/blast_results/$name.fasta
-  cut -f 1,2 $out/roundabout/blast_results/$name.fasta.fai | awk '{print "chr - " $1 " " $1 " 0 " $2 " black"}' > $out/roundabout/circos/${name}_karyotype.txt
-
-  echo "$(date) : getting skew for $fasta"
-  chr_lengths=$(awk '{print $1 ":" $2 }' $out/roundabout/blast_results/$name.fasta.fai)
-  echo -e "#chr\tstr\tend" > $out/roundabout/beds/$name.windows.bed
-  for chr_length in ${chr_lengths[@]}
-  do
-    chr=$(echo $chr_length | cut -f 1 -d ":" )
-    length=$(echo $chr_length | cut -f 2 -d ":" )
-    for ((i=1;i<=length;i+=500))
-    do
-      if [ "$i" -lt "$((length - 499 ))" ]
-      then
-        echo -e "$chr\t$i\t$((i + 499 ))" >> $out/roundabout/beds/$name.windows.bed
-      else
-        echo -e "$chr\t$i\t$length" >> $out/roundabout/beds/$name.windows.bed
-      fi
-    done
-  done
-  bedtools nuc -fi $out/roundabout/blast_results/$name.fasta -bed $out/roundabout/beds/$name.windows.bed > $out/roundabout/beds/$name.GC.bed
-
-  if [ -d "$gff_directory" ]
-  then
-    echo "$(date) : adding bands to karytype file from gff file"
-    cut -f 1,2 $out/roundabout/blast_results/$name.fasta.fai > $out/roundabout/beds/${name}_genome.txt
-    awk '{print $1 "\t" $2 "\t" $2 + 1000000 }' $out/roundabout/beds/${name}_genome.txt > $out/roundabout/beds/$name.genome_subtract.bed
-
-    grep -h ID $gff_directory/${name}*gf* 2> /dev/null | grep -v "region" | awk -v name=$name '{print name "_" $1 "\t" $4 "\t" $5 "\t" $3 }' | sort -k 1,1 -k 2,2n -k 3,3n > $out/roundabout/beds/${name}_bands.bed
-    bedtools merge -i $out/roundabout/beds/${name}_bands.bed | sort -k 1,1 -k 2,2n -k 3,3n > $out/roundabout/beds/${name}_bands_merged.bed
-    bedtools subtract -a $out/roundabout/beds/${name}_bands_merged.bed -b $out/roundabout/beds/$name.genome_subtract.bed > $out/roundabout/beds/${name}_bands_sorted.bed
-
-    grep -e "0$" -e "5$" $out/roundabout/beds/${name}_bands_sorted.bed | awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " gpos25"  }' >  $out/roundabout/beds/${name}_karyotype.bed
-    grep -e "1$" -e "6$" $out/roundabout/beds/${name}_bands_sorted.bed | awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " gpos50"  }' >> $out/roundabout/beds/${name}_karyotype.bed
-    grep -e "2$" -e "7$" $out/roundabout/beds/${name}_bands_sorted.bed | awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " gpos75"  }' >> $out/roundabout/beds/${name}_karyotype.bed
-    grep -e "3$" -e "8$" $out/roundabout/beds/${name}_bands_sorted.bed | awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " gpos100" }' >> $out/roundabout/beds/${name}_karyotype.bed
-    grep -e "4$" -e "9$" $out/roundabout/beds/${name}_bands_sorted.bed | awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " white" }' >> $out/roundabout/beds/${name}_karyotype.bed
-
-    bedtools complement -i $out/roundabout/beds/${name}_bands_merged.bed -g $out/roundabout/beds/${name}_genome.txt > $out/roundabout/beds/${name}_bands_complement.bed
-    bedtools subtract -a $out/roundabout/beds/${name}_bands_complement.bed -b $out/roundabout/beds/$name.genome_subtract.bed > $out/roundabout/beds/${name}_complement_sorted.bed
-    awk '{print "band " $1 " " NR " " NR " " $2 " " $3 " gneg" }' $out/roundabout/beds/${name}_complement_sorted.bed >> $out/roundabout/beds/${name}_karyotype.bed
-
-    sort -k 2,2 -k 5,5n -k 6,6n $out/roundabout/beds/${name}_karyotype.bed | uniq >> $out/roundabout/circos/${name}_karyotype.txt
-  fi
-
-  if [ -d "$amrfinder_directory" ]
-  then
-    echo "$(date) : getting AMR genes $fasta"
-    cat $amrfinder_directory/${name}* 2> /dev/null | awk -v name=$name '{print name "_" $3 " " $4 " " $5 " " $7 }' > $out/roundabout/beds/${name}_amrfinder.bed
-  fi
-done
-
-echo "$(date) : calculating skew : $out/roundabout/beds/skew.bed"
-grep -hv "#" $out/roundabout/beds/*.GC.bed | awk '{print $1 " " $2 " " $3 " " $4 }' > $out/roundabout/beds/AC.per.bed
-grep -hv "#" $out/roundabout/beds/*.GC.bed | awk '{print $1 " " $2 " " $3 " " $5 }' > $out/roundabout/beds/GC.per.bed
-#GC Skew is calculated as (G - C) / (G + C)
-grep -hv "#" $out/roundabout/beds/*.GC.bed | awk '{print $1 " " $2 " " $3 " " $8 - $7 " " $7 + $8 }' | awk '{print $1 " " $2 " " $3 " " $4 / $5 }' > $out/roundabout/beds/skew.bed
-
-cat $out/roundabout/beds/*_amrfinder.bed 2> /dev/null | sed "s/-//g" | sed "s/-//g" | sed "s/(//g" | sed "s/)//g" > $out/roundabout/beds/amrfinder.bed
-
-# Getting all of the blast results
-for fasta in $out/roundabout/blast_results/*.fasta
-do
-  name=$(basename $fasta | sed 's/.fasta//g')
-
-  echo "" > $out/roundabout/blast_results/for_$name.fa
-  for fasta2 in $out/roundabout/blast_results/*.fasta
-  do
-    name2=$(basename $fasta2 | sed 's/.f.*//g')
-    if [ "$name" != "$name2" ]
-    then
-      cat $fasta2 >> $out/roundabout/blast_results/for_$name.fa
-    fi
-  done
-  echo "$(date) : blasting $fasta against other fastas"
-  blastn -query $fasta -subject $out/roundabout/blast_results/for_$name.fa -outfmt 6 -out $out/roundabout/blast_results/$name.blast_hits.txt -evalue 1e-25
-  awk '{print $1 "\t" $7 "\t" $8 "\t" $2 "\t" $9 "\t" $10 }' $out/roundabout/blast_results/$name.blast_hits.txt | sort -k 1,1 -k2,2n -k3,3n > $out/roundabout/blast_results/$name.blast_hits.bed
-
-  # Getting all the start and end values to break up large chunks
-  echo "$(date) : formating blast results to bedfile for $name"
-  awk '{if ($11 == "0.0") print $1 "\t" $7 "\t" $8 }' $out/roundabout/blast_results/$name.blast_hits.txt | awk '{ if ( $3 - $2 > 1000) print $1 "\tstart:\t" $2 "\n" $1 "\tend:\t" $3 }' | sort -k 1,1 -k3,3n | uniq > $out/roundabout/beds/$name.starts_ends.txt
-  while read line
-  do
-    line_parts=($(echo $line))
-    divisions=($(grep "${line_parts[0]}" $out/roundabout/beds/$name.starts_ends.txt | awk -v start=${line_parts[1]} -v end=${line_parts[2]} '{if ($3 >= start && $3 <= end ) print $2 $3 }'))
-    prior_division=""
-    for division in ${divisions[@]}
-    do
-      start_end=$(echo $division | cut -f 1 -d ":" )
-      value=$(echo $division | cut -f 2 -d ":" )
-      if [ -n "$prior_division" ]
-      then
-        if [ "$start_end" == "start" ]
-        then
-          echo -e "${line_parts[0]}\t$prior_division\t$((value -1))" >> $out/roundabout/beds/$name.divided.bed
-          prior_division=$value
-        elif [ "$start_end" == "end" ]
-        then
-          echo -e "${line_parts[0]}\t$prior_division\t$value" >> $out/roundabout/beds/$name.divided.bed
-          prior_division=$((value +1))
-        fi
-      else
-        prior_division=$value
-      fi
-    done
-  done < <(awk '{if ($11 == "0.0") print $1 "\t" $7 "\t" $8 }' $out/roundabout/blast_results/$name.blast_hits.txt | awk '{if ($3 - $2 > 1000) print $0}' | sort -k 1,1 -k2,2n -k3,3n | uniq )
-  sort -k 1,1 -k 2,2n -k 3,3n $out/roundabout/beds/$name.divided.bed | uniq | awk '{if ($3 - $2 > 1000) print $0}' > $out/roundabout/beds/$name.final.bed
-done
-
-# Now we have the initial beds for find intersections
-# the intersected bed
-# convert the intersected bed into something that can be subtracted from future beds
-# take the new bed, and subtrac the other beds
-echo "$(date) : finding the intersections for each final bedfile"
-echo "" > $out/roundabout/beds/subtract.bed
-echo "Completed_Named" > $out/roundabout/beds/finished_names.txt
-for bed in $out/roundabout/beds/*.final.bed
-do
-  name=$(basename $bed | sed 's/.final.bed//g')
-
-  echo "$(date) : adjusting $out/roundabout/beds/subtract.bed"
-  awk '{if ($3 > $2) print $1 "\t" $2 "\t" $3 ; if ($3 < $2) print $1 "\t" $3 "\t" $2 }' $out/roundabout/beds/subtract.bed | sort -k 1,1 -k2,2n -k3,3n | grep "." > $out/roundabout/beds/subtract.sorted.bed
-  echo "$(date) : removing $out/roundabout/beds/subtract.bed from $name to reduce duplications"
-  bedtools subtract -a $bed -b $out/roundabout/beds/subtract.sorted.bed | awk '{if ($3 -$2 > 1000) print $0 }' | grep -vwf $out/roundabout/beds/finished_names.txt > $out/roundabout/beds/${name}_with_subtraction.bed
-  echo "$name" >> $out/roundabout/beds/finished_names.txt
-  echo "$(date) : finding intersections for $name"
-  bedtools intersect -a $out/roundabout/beds/${name}_with_subtraction.bed -b $out/roundabout/blast_results/$name.blast_hits.bed -f 1 -wo > $out/roundabout/beds/$name.intersect.bed
-  echo "$(date) : converting intersections from $name"
-  awk '{if ($8 > $9) print $7 "\t" $8-$2+$5 "\t" $9-$3+$6 ; if ($8 < $9) print $7 "\t" $8+$2-$5 "\t" $9+$3-$6 }' $out/roundabout/beds/$name.intersect.bed >> $out/roundabout/beds/subtract.bed
-done
-
-# Now to get the groups with the colors. We need to gather all of the intersect beds, determine the size, and then sort by size
-echo "$(date) : assinging colors to groups"
-awk '{print $1 "\t" $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6 "\t" $7 "\t" $8 "\t" $9 "\t" $3 - $2}' $out/roundabout/beds/*intersect.bed | sort -k 10,10n -k 1,1 -k 7,7 -k 2,2n |  cut -f 1-3 | uniq | tail -n 36 | awk '{print $1 "\t" $2 "\t" $3 "\tfill_color=color" NR }' > $out/roundabout/beds/color_groups.bed
-bedtools intersect -a $out/roundabout/beds/color_groups.bed -b $out/roundabout/beds/*intersect.bed -f 1 -F 1 -wo > $out/roundabout/beds/blast_color.bed
-
-echo "$(date) : creating final highlights file : $out/roundabout/circos/highlights.bed"
-awk '{if ($13 > $14) print $12 " " $13-$2+$10 " " $14-$3+$11 " " $4 ; if ($13 < $14) print $12 " " $13+$2-$10 " " $14+$3-$11 " " $4 }' $out/roundabout/beds/blast_color.bed | sort -k 1,1 -k 2,2n -k 3,3n | uniq > $out/roundabout/circos/highlights.txt
-cat $out/roundabout/beds/color_groups.bed >> $out/roundabout/circos/highlights.txt
-
-# currently losing samples in highlights.bed, but will need to fix this at the lab
-echo "$(date) : creating highlighted circos plots for each fasta"
-for karyotype in $out/roundabout/circos/*_karyotype.txt
-do
-  name=$(basename $karyotype | sed 's/_karyotype.txt//g')
-  cat $conf | \
-    sed "s~ROUNDABOUTPATH~${roundaboutpath}/conf~g"      | \
-    sed "s~HIGHLIGHTFILE~$out/roundabout/circos/highlights.txt~g" | \
-    sed "s~KARYOTYPEFILE~${karyotype}~g"                 | \
-    sed "s~FINALPNG~${out}/roundabout/circos/${name}.single.png~g"  | \
-    sed "s~ACSKEWFILE~$out/roundabout/beds/AC.per.bed~g" | \
-    sed "s~GCSKEWFILE~$out/roundabout/beds/GC.per.bed~g" | \
-    sed "s~SKEWSKEWFILE~$out/roundabout/beds/skew.bed~g" | \
-    sed "s~AMRFINDERFILE~$out/roundabout/beds/amrfinder.bed~g" > $out/roundabout/circos/${name}_basic.conf
-  if [ -z "$circos" ]
-  then
-    circos -conf $out/roundabout/circos/${name}_basic.conf
-  fi
-done
-
-echo "$(date) : roundabout complete!"
+echo "$(date) : workflow has been completed"
