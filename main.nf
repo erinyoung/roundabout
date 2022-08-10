@@ -2,7 +2,6 @@
 
 VERSION = "0.0.20220810"
 
-params.config_directory   = workflow.projectDir + "/configs/"
 params.outdir             = 'roundabout'
 params.fastas             = 'plasmids' 
 params.length             = ''
@@ -12,7 +11,7 @@ params.length             = ''
 //# contaienrs for all processes : karyotype, divide, highlight
 
 Channel
-  .fromPath("${params.plasmid_directory}/*{.fa,.fasta,.fna}")
+  .fromPath("${params.fastas}/*{.fa,.fasta,.fna}")
   .view { "input fasta file : " + it}
   .set { fastas }
 
