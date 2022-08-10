@@ -41,7 +41,7 @@ with open(sys.argv[1], 'r') as file :
             genes.write(chr + "\t" + str(start) + "\t" + str(end) + "\t" + strand + "\t" + name + "\n")
             
             # merging overlapping ranges (in likely the worst way possible)
-            if start >= ranges[str(i)]['start'] and start <= ranges[str(i)]['end']:
+            if start >= ranges[str(i)]['start'] and start < ranges[str(i)]['end']:
                 if ranges[str(i)]['end'] < end:
                     ranges[str(i)]['end'] = end
                     if color != ranges[str(i)]['color']:
