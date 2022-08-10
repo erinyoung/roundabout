@@ -10,10 +10,13 @@ roundabout uses blast to find regions of similarity (as opposed to groups of gen
 nextflow run erinyoung/roundabout --fastas <directory to fastas>
 ```
 
-There are not many editable parameters with this workflow, but the minimum length can be adjusted with `params.length` and the directory with the results can be adjusted with `params.outdir`.
+There are not many adjustable parameters with this workflow, but the minimum length can be adjusted with `params.length` and the directory with the results can be adjusted with `params.outdir`.
+
+## Dependencies
+- [nextflow](https://www.nextflow.io/)
+- [singularity](https://docs.sylabs.io/guides/3.5/user-guide/introduction.html)
 
 This workflow uses singularity to use containers that run files through
-dependencies:
 - [blast](https://blast.ncbi.nlm.nih.gov/Blast.cgi) : find similarities between fastas
 - [circos](http://circos.ca/) : visualizing the end product
 - [bedtools](https://bedtools.readthedocs.io/en/latest/) : combining regions of interest
@@ -23,7 +26,21 @@ dependencies:
 - [amrfinder](https://www.ncbi.nlm.nih.gov/pathogens/antimicrobial-resistance/AMRFinder/) : for amr gene locations
 - [plasmidfinder](https://bitbucket.org/genomicepidemiology/plasmidfinder/) : for plasmid identification
 
+## Running tests
+There are some files included in this repo that can be used for testing.
+
+```
+# pull the repo
+nextflow pull erinyoung/roundabout 
+# run with the test files (if your asset directory is different, you will need to adjust this command)
+nextflow run erinyoung/roundabout --fastas ~/.nextflow/assets/erinyoung/roundabout/test
+```
+
 This was created for personal use with specific projects in mind, as opposed to general use. As such, other users may notice that the use case is highly specific and informal. Put in an issue if this is something that interests you and you need an additional feature.
+
+
+## Created images
+| <img src="./assets/example1_roundabout.png"> | <img src="./assets/example2_roundabout.png"> | <img src="./assets/example3_roundabout.png"> | <img src="./assets/test_test1_roundabout.png"> | <img src="./assets/test_test2_roundabout.png"> |
 
 <details>
    <summary>Final File Tree</summary>
