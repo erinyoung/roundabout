@@ -4,7 +4,7 @@ process circos {
     publishDir params.outdir, mode: 'copy'
 
     input:
-    tuple val(sample), file(karyotype), file(amr), file(skew), file(highlight), path(conf)
+    tuple val(sample), file(karyotype), file(amr), file(skew), file(highlight), file(highlight_text), path(conf)
 
     output:
     path "circos/${sample}/data/*"
@@ -14,13 +14,15 @@ process circos {
     shell:
     '''
     mkdir -p circos/!{sample} data
+
     cat !{karyotype} | awk '{if ($5 != $6) print $0}' > data/karyotype.txt
     mv !{sample}_amrfinder_text.bed data/amrfinder_text.txt
     mv !{sample}_amrfinder.bed data/amrfinder.txt
     mv *AC.bed data/AC.bed
     mv *GC.bed data/GC.bed
     mv *skew.bed data/skew.bed
-    mv !{highlight} data/highlights.txt
+    mv highlights.txt data/highlights.txt
+    mv highlights_text.txt data/highlights_text.txt
 
     circos -conf conf/template.conf
     mv *svg circos/!{sample}/!{sample}_roundabout.svg

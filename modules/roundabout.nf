@@ -1,7 +1,7 @@
 process prep {
     tag "${fasta}"
     publishDir params.outdir, mode: 'copy'
-    container = "staphb/samtools:latest"
+    container "staphb/samtools:latest"
 
     input:
     file(fasta)
@@ -37,6 +37,7 @@ process prep {
 process karyotype {
     tag "${sample}"
     publishDir params.outdir, mode: 'copy'
+    container "python:3.10.6"
 
     input:
     tuple val(sample), file(gff), file(script)
@@ -51,13 +52,13 @@ process karyotype {
     python !{script} !{gff}
     cp karyotype_genes.bed karyotype/!{sample}_karyotype_genes.bed
     cp karyotype.txt karyotype/!{sample}_karyotype.txt
-
     '''
 }
 
 process divide {
     tag "${sample}"
     publishDir params.outdir, mode: 'copy'
+    container "python:3.10.6"
 
     input:
     tuple val(sample), file(hits), file(script)
@@ -76,6 +77,7 @@ process divide {
 process highlight {
     tag "highlight"
     publishDir params.outdir, mode: 'copy'
+    container "python:3.10.6"
 
     input:
     file(hits)
@@ -83,7 +85,7 @@ process highlight {
     file(script)
 
     output:
-    path "highlight/highlights.txt", emit: txt
+    path "highlight/highlights*.txt", emit: txt
 
     shell:
     '''
@@ -92,55 +94,7 @@ process highlight {
     cat *txt > combine/blast_hits.txt
     python !{script} !{params.length}
     mv highlights.txt highlight/highlights.txt
+    mv highlights_text.txt highlight/highlights_text.txt
     '''
 }
 
-process prep_blast {
-    tag "${sample}"
-    publishDir params.outdir, mode: 'copy'
-    
-    input:
-    tuple val(sample), file(hits)
-
-    output:
-    tuple val(sample), file("blastn/!{sample}.divided.bed")
-    path "whatever"
-
-    shell:
-    '''
-    mkdir blastn
-    awk '{if ($11 == "0.0") print $1 "\\t" $7 "\\t" $8 "\\t" $2 "\\t" $9 "\\t" $10 }' !{hits} | sort -k 1,1 -k2,2n -k3,3n > blastn/!{sample}.blast_hits.bed
-
-    #cut -f 1-3 blastn/!{sample}.blast_hits.bed | sort -k 1,1 -k2,2n -k3,3n | uniq > blastn/!{sample}.uniq.bed
-
-    awk '{if ($11 == "0.0") print $1 "\\t" $7 "\\t" $8 }' blastn/!{sample}.blast_hits.bed | awk '{ if ( $3 - $2 > 1000) print $1 "\\tstart:\t" $2 "\\n" $1 "\tend:\\t" $3 }' | sort -k 1,1 -k3,3n | uniq > blastn/!{sample}.starts_ends.txt
-    
-    while read line
-    do
-        line_parts=($(echo $line))
-        divisions=($(grep "${line_parts[0]}" blastn/!{sample}.starts_ends.txt | awk -v start=${line_parts[1]} -v end=${line_parts[2]} '{if ($3 >= start && $3 <= end ) print $2 $3 }'))
-        prior_division=""
-        for division in ${divisions[@]}
-        do
-            print $division
-            start_end=$(echo $division | cut -f 1 -d ":" )
-            value=$(echo $division | cut -f 2 -d ":" )
-            if [ -n "$prior_division" ]
-            then
-                if [ "$start_end" == "start" ]
-                then
-                    echo -e "${line_parts[0]}\\t$prior_division\\t$((value -1))" >>  blastn/!{sample}.divided.bed
-                    prior_division=$value
-                elif [ "$start_end" == "end" ]
-                then
-                    echo -e "${line_parts[0]}\\t$prior_division\\t$value" >>  blastn/!{sample}.divided.bed
-                    prior_division=$((value +1))
-                fi
-            else
-                prior_division=$value
-            fi  
-        done
-    done < <(awk '{if ($11 == "0.0") print $1 "\\t" $7 "\\t" $8 }' !{hits} | awk '{if ($3 - $2 > 1000) print $0}' | sort -k 1,1 -k2,2n -k3,3n | uniq )
-
-'''
-}
