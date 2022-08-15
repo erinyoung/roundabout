@@ -41,7 +41,6 @@ with open("combine/blast_hits.txt", 'r') as file :
                     match_start = int(end2) + int(end_diff)
                     match_end = int(start2) - int(start_diff)
 
-                #divided[chr][start]
                 if str(match_start) not in divided[chr2].keys():
                     for potential_start in divided[chr2].keys():
                         if (int(potential_start) - 20) <= match_start <= (int(potential_start) + 20):
@@ -58,9 +57,8 @@ with open("combine/blast_hits.txt", 'r') as file :
                 for numbers in group.keys():
                     if saved_line in group[numbers]['list']:
                         new_group = False
-                        if str(match_start) in divided[chr].keys():
-                            if (saved_line2 not in group[numbers]['list']):
-                                group[numbers]['list'].append(saved_line2)      
+                        if (saved_line2 not in group[numbers]['list']) and (start2 in divided[chr2].keys()):
+                            group[numbers]['list'].append(saved_line2)      
                     elif saved_line2 in group[numbers]['list']:
                         new_group = False
                         if saved_line not in group[numbers]['list']:
