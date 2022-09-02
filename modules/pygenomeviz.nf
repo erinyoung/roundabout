@@ -1,5 +1,5 @@
 process pmauve {
-    tag "${sample}"
+    tag "pgv-pmauve"
     publishDir params.outdir, mode: 'copy'
 
     input:
@@ -24,7 +24,7 @@ process pmauve {
 }
 
 process mummer {
-    tag "${sample}"
+    tag "pgv-mummer"
     publishDir params.outdir, mode: 'copy'
 
     input:
@@ -50,8 +50,9 @@ process mummer {
 }
 
 process mmseqs {
-    tag "${sample}"
+    tag "pgv-mmseqs"
     publishDir params.outdir, mode: 'copy'
+    cpus 8
 
     input:
     file(files)
