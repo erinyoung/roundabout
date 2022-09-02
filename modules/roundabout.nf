@@ -44,7 +44,7 @@ process karyotype {
 
     output:
     tuple val(sample), file("karyotype/${sample}_karyotype_genes.bed"), emit: genes
-    tuple val(sample), file("karyotype/${sample}_karyotype.txt"), emit: karyotype
+    tuple val(sample), file("karyotype/${sample}_karyotype.txt"),       emit: karyotype
 
     shell:
     '''
@@ -64,13 +64,13 @@ process divide {
     tuple val(sample), file(hits), file(script)
 
     output:
-    path "blastn/${sample}.sorted_divided.bed", emit: bed
-    path "blastn/${sample}.starts_ends.txt"
-    path "blastn/${sample}.divided.bed"
+    path "blastn/${sample}.divided.bed", emit: bed
 
     shell:
     '''
-    bash !{script} !{hits} !{sample}
+    mkdir blastn
+    python !{script} !{hits} !{params.length}
+    mv !{sample}.divided.bed blastn/.
     '''
 }
 
