@@ -1,24 +1,22 @@
 #!/usr/bin/env nextflow
 
-VERSION = "0.0.20220810"
+VERSION = "0.1.20220903"
 
 params.outdir             = 'roundabout'
 params.fastas             = 'plasmids' 
 params.length             = ''
 
 //# include the plasmidfinder fasta backbone in the comparison?
-//# visualize with pygenomeviz
-//# contaienrs for all processes : karyotype, divide, highlight
 
 Channel
   .fromPath("${params.fastas}/*{.fa,.fasta,.fna}")
   .view { "input fasta file : " + it}
   .set { fastas }
 
-circos_confs      = Channel.fromPath( workflow.projectDir + "/conf", type:'dir' )
-divide_script     = Channel.fromPath( workflow.projectDir + "/bin/divide.sh", type: 'file' )
-karyotype_script  = Channel.fromPath( workflow.projectDir + "/bin/karyotype.py", type: 'file' )
-highlights_script = Channel.fromPath( workflow.projectDir + "/bin/groups.py")
+circos_confs      = Channel.fromPath( workflow.projectDir + "/conf",              type: 'dir' )
+divide_script     = Channel.fromPath( workflow.projectDir + "/bin/divide.py",     type: 'file')
+karyotype_script  = Channel.fromPath( workflow.projectDir + "/bin/karyotype.py",  type: 'file')
+highlights_script = Channel.fromPath( workflow.projectDir + "/bin/groups.py",     type: 'file')
 
 include { amrfinder }                           from './modules/amrfinder'      addParams(outdir: params.outdir)
 include { plasmidfinder }                       from './modules/plasmidfinder'  addParams(outdir: params.outdir)
@@ -27,17 +25,21 @@ include { blastn }                              from './modules/blast'          
 include { divide; karyotype; highlight; prep }  from './modules/roundabout'     addParams(outdir: params.outdir, length: params.length)
 include { bedtools_nuc as nuc }                 from './modules/bedtools'       addParams(outdir: params.outdir)
 include { circos }                              from './modules/circos'         addParams(outdir: params.outdir)
+include { pmauve; mummer; mmseqs }              from './modules/pygenomeviz'    addParams(outdir: params.outdir)
 
 workflow {
   prep(fastas)
   prepped_fastas=prep.out.flatten()
   fasta_collection = prepped_fastas.collect()
+  pmauve(fasta_collection)
 
   input = prepped_fastas.map{ it -> tuple(it.baseName, it) }
   plasmidfinder(input)
   amrfinder(input)
   prokka(input)
   karyotype(prokka.out.gff.combine(karyotype_script))
+  mummer(prokka.out.gbk.collect())
+  mmseqs(prokka.out.gbk.collect())
 
   blastn(input.map{ it -> it[0]}, fasta_collection )
 
