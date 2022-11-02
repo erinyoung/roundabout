@@ -16,7 +16,7 @@ ends   = []
 chr    = ''
 with open(hits, 'r') as file :
     for line in file.readlines() :
-        if int(line.split()[3]) >= minlength and float(line.split()[2]) >= 90.0:
+        if int(line.split()[3]) >= minlength and round(float(line.split()[2]) - 90.0) >= 0:
             chr   = line.split()[0]
             start = int(line.split()[6])
             end   = int(line.split()[7])
@@ -31,7 +31,7 @@ ends.sort()
 divisions = []
 with open(hits, 'r') as file :
     for line in file.readlines() :
-        if int(line.split()[3]) >= minlength and float(line.split()[2]) >= 90.0:
+        if int(line.split()[3]) >= minlength and round(float(line.split()[2]) - 90.0) >= 0:
             start = int(line.split()[6])
             end   = int(line.split()[7])
             mids  = []
@@ -43,7 +43,7 @@ with open(hits, 'r') as file :
                     mids.append(mid+1)
             mids.sort()
             if len(mids) == 1:
-                if start - end >= minlength:
+                if end - start >= minlength:
                     div=str(start) + "-" + str(end)
                     if div not in divisions:
                         divisions.append(div)
