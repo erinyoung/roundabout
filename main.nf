@@ -1,12 +1,13 @@
 #!/usr/bin/env nextflow
 
-VERSION = "0.1.20220903"
+VERSION = "0.1.20220915"
 
 params.outdir             = 'roundabout'
 params.fastas             = 'plasmids' 
 params.length             = ''
 
 //# include the plasmidfinder fasta backbone in the comparison?
+//# allow blast for specific gene(s) of interest
 
 Channel
   .fromPath("${params.fastas}/*{.fa,.fasta,.fna}")
@@ -25,7 +26,7 @@ include { blastn }                              from './modules/blast'          
 include { divide; karyotype; highlight; prep }  from './modules/roundabout'     addParams(outdir: params.outdir, length: params.length)
 include { bedtools_nuc as nuc }                 from './modules/bedtools'       addParams(outdir: params.outdir)
 include { circos }                              from './modules/circos'         addParams(outdir: params.outdir)
-include { pmauve; mummer; mmseqs }              from './modules/pygenomeviz'    addParams(outdir: params.outdir)
+include { pmauve; mummer; mmseqs; dnadiff }     from './modules/pygenomeviz'    addParams(outdir: params.outdir)
 
 workflow {
   prep(fastas)
@@ -42,6 +43,7 @@ workflow {
   mmseqs(prokka.out.gbk.collect())
 
   blastn(input.map{ it -> it[0]}, fasta_collection )
+  dnadiff(input.map{ it -> it[0]}, fasta_collection )
 
   divide(blastn.out.hits.combine(divide_script))
   nuc(input)
