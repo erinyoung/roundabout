@@ -1,6 +1,8 @@
 process pmauve {
     tag "pgv-pmauve"
     publishDir params.outdir, mode: 'copy'
+    container 'staphb/pygenomeviz:latest'
+    errorStrategy 'ignore'
 
     input:
     file(files)
@@ -26,6 +28,8 @@ process pmauve {
 process mummer {
     tag "pgv-mummer"
     publishDir params.outdir, mode: 'copy'
+    container 'staphb/pygenomeviz:latest'
+    errorStrategy 'ignore'
 
     input:
     file(files)
@@ -52,7 +56,9 @@ process mummer {
 process mmseqs {
     tag "pgv-mmseqs"
     publishDir params.outdir, mode: 'copy'
+    container 'staphb/pygenomeviz:latest'
     cpus 8
+    errorStrategy 'ignore'
 
     input:
     file(files)
@@ -77,3 +83,29 @@ process mmseqs {
     '''
 }
 
+// yeah... I know I should probably use a new container, but mummer is in this one already
+process dnadiff {
+    tag "${sample}"
+    publishDir params.outdir, mode: 'copy'
+    container 'staphb/pygenomeviz:latest'
+
+    input:
+    val(sample)
+    file(fasta)
+
+    output:
+    path "dnadiff/${sample}/*"
+
+    shell:
+    '''
+    mkdir -p dnadiff/!{sample}
+
+    for fasta in $(ls !{fasta} | grep -Fv "!{sample}.fasta" )
+    do
+      sample2=$(echo $fasta | rev | cut -f 2- -d "." | rev )
+      dnadiff !{sample}.fasta $fasta --prefix !{sample}-$sample2
+
+      mv !{sample}-$sample2* dnadiff/!{sample}/.
+    done
+    '''
+}
