@@ -70,7 +70,12 @@ process divide {
     '''
     mkdir blastn
     python !{script} !{hits} !{params.length}
-    mv !{sample}.divided.bed blastn/.
+    if [ -f "!{sample}.divided.bed" ]
+    then 
+        sort -nk2 !{sample}.divided.bed > blastn/!{sample}.divided.bed
+    else
+        touch blastn/!{sample}.divided.bed
+    fi
     '''
 }
 
