@@ -2,6 +2,7 @@ process prokka {
   tag "${sample}"
   container 'staphb/prokka:latest'
   publishDir params.outdir, mode: 'copy'
+  cpus 8
 
   input:
   tuple val(sample), file(contigs)
