@@ -20,7 +20,13 @@ process amrfinder {
       --name !{sample} \
       --output ncbi-AMRFinderplus/!{sample}_amrfinder.txt
 
-    awk '{print $3 " " $4 " " $5 }' ncbi-AMRFinderplus/!{sample}_amrfinder.txt | grep -v "identifier" >> ncbi-AMRFinderplus/!{sample}_amrfinder.bed
-    awk '{print $3 " " $4 " " $5 " " $7 }' ncbi-AMRFinderplus/!{sample}_amrfinder.txt | grep -v "identifier" > ncbi-AMRFinderplus/!{sample}_amrfinder_text.bed
+    lines=$(wc -l ncbi-AMRFinderplus/!{sample}_amrfinder.txt | awk '{print $1}')
+    if [ "$lines" -gt 1 ]
+    then
+      cat ncbi-AMRFinderplus/!{sample}_amrfinder.txt | awk '{print $3 " " $4 " " $5 }'        | grep -v "identifier" > ncbi-AMRFinderplus/!{sample}_amrfinder.bed
+      cat ncbi-AMRFinderplus/!{sample}_amrfinder.txt | awk '{print $3 " " $4 " " $5 " " $7 }' | grep -v "identifier" > ncbi-AMRFinderplus/!{sample}_amrfinder_text.bed
+    else 
+      touch ncbi-AMRFinderplus/!{sample}_amrfinder_text.bed ncbi-AMRFinderplus/!{sample}_amrfinder.bed
+    fi
   '''
 }

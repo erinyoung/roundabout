@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import sys
+#from xmlrpc.server import MultiPathXMLRPCServer
 
 try:
     minlength = int(sys.argv[1])
@@ -14,7 +15,14 @@ with open("combine/combined.bed", 'r') as file :
         if (int(end) - int(start) >= minlength):
             if chr not in divided.keys():
                 divided[chr]={}
-            divided[chr][start] = end
+            divided[chr][start] = int(end)
+
+if not divided:
+    print("No blast matches found!")
+    exit(0)
+
+# blast file columns
+# 0: qseqid, 1: sseqid, 2: pident, 3: length, 4: mismatch, 5: gapopen, 6: qstart, 7: qend, 8: sstart, 9: send, 10: evalue, 11: bitscore
 
 i=0
 group = {str(i) : {'list': [], 'length' : 0}}
@@ -22,52 +30,65 @@ lengths = []
 matches = []
 with open("combine/blast_hits.txt", 'r') as file :
     for line in file.readlines() :
-        chr1 = line.split()[0]
-        chr2 = line.split()[1]
-        start1 = line.split()[6]
-        end1 = line.split()[7]
-        start2 = line.split()[8]
-        end2 = line.split()[9]
-        for key in divided[chr1].keys():
-            if int(start1) <= int(key) and int(end1) >= int(divided[chr1][key]):
-                start_diff = int(key) - int(start1)
-                end_diff = int(end1) - int(divided[chr1][key])
-                saved_line= chr1 + ":" + key + ':' + divided[chr1][key]
-                match_length = int(divided[chr1][key]) - int(key)             
-                if int(start2) < int(end2):
-                    match_start = int(start2) + start_diff
-                    match_end = int(end2) - end_diff
-                elif (int(start2) > int(end2)):
-                    match_start = int(end2) + int(end_diff)
-                    match_end = int(start2) - int(start_diff)
+        qseqid      = line.split()[0]
+        sseqid      = line.split()[1]
+        qstart      = int(line.split()[6])
+        qend        = int(line.split()[7])
+        sstart      = int(line.split()[8])
+        send        = int(line.split()[9])
 
-                if str(match_start) not in divided[chr2].keys():
-                    for potential_start in divided[chr2].keys():
-                        if (int(potential_start) - 20) <= match_start <= (int(potential_start) + 20):
-                            match_start=int(potential_start)
+        for start in divided[qseqid].keys():
+            saved_line          = ''
+            start_diff          = 0
+            end_diff            = 0
 
-                # sometimes there are small indels
-                if str(match_start) in divided[chr2].keys():
-                    if int(divided[chr2][str(match_start)]) != int(match_end):
-                        match_end=int(divided[chr2][str(match_start)])
+            # looking to see if potential groups in divided apply to this line
+            if int(start) >= qstart and divided[qseqid][start] <= qend:
+                start_diff      = int(start) - qstart
+                end_diff        = qend - divided[qseqid][start]                
+                saved_line      = qseqid + ":" + start + ':' + str(divided[qseqid][start])
+                match_length    = divided[qseqid][start] - int(start)
 
-                saved_line2= chr2 + ":" + str(match_start) + ":" + str(match_end)
-                new_group = True
+                if sstart < send:
+                    match_start = sstart + start_diff
+                    match_end   = send   - end_diff
+                elif sstart > send:
+                    match_start = send   + end_diff
+                    match_end   = sstart - start_diff
 
-                for numbers in group.keys():
-                    if saved_line in group[numbers]['list']:
-                        new_group = False
-                        if (saved_line2 not in group[numbers]['list']) and (start2 in divided[chr2].keys()):
-                            group[numbers]['list'].append(saved_line2)      
-                    elif saved_line2 in group[numbers]['list']:
-                        new_group = False
-                        if saved_line not in group[numbers]['list']:
-                            group[numbers]['list'].append(saved_line)
+                match_found = False
+                if str(match_start) not in divided[sseqid].keys():
+                    for start_fix in divided[sseqid].keys():
+                        if int(start_fix) - 50 <= int(match_start) <= int(start_fix) + 50 :
+                            match_start     = start_fix
+                            if divided[sseqid][start_fix] - 50 <= match_end <= divided[sseqid][start_fix] + 50 :
+                                match_end   = divided[sseqid][start_fix]
+                                match_found = True
+                            else :
+                                print("no match was found for 2 : " + line)
+                else:
+                    if divided[sseqid][str(match_start)] - 50 <= match_end <= divided[sseqid][str(match_start)] + 50 :
+                        match_end   = divided[sseqid][str(match_start)]
+                        match_found = True
 
-                if new_group:
-                    i += 1
-                    group[str(i)] = { 'list': [saved_line, saved_line2], "length" : match_length }
-                    lengths.append(match_length)
+                saved_line2 = sseqid + ":" + str(match_start) + ":" + str(match_end)
+
+                if match_found :
+                    new_group = True
+                    for saved in group.keys():
+                        if saved_line in group[saved]['list']:
+                            new_group = False
+                            if (saved_line2 not in group[saved]['list']):
+                                group[saved]['list'].append(saved_line2)      
+                        elif saved_line2 in group[saved]['list']:
+                            new_group = False
+                            if saved_line not in group[saved]['list']:
+                                group[saved]['list'].append(saved_line)
+
+                    if new_group:
+                        i += 1
+                        group[str(i)] = { 'list': [saved_line, saved_line2], "length" : match_length }
+                        lengths.append(match_length)
 del group["0"]
 
 # adjusting duplicate groups

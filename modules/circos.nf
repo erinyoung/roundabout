@@ -9,6 +9,7 @@ process circos {
     output:
     path "circos/${sample}/data/*"
     path "circos/${sample}/*roundabout*"
+    path "circos/*png"
 
 
     shell:
@@ -27,6 +28,7 @@ process circos {
     circos -conf conf/template.conf
     mv *svg circos/!{sample}/!{sample}_roundabout.svg
     mv *png circos/!{sample}/!{sample}_roundabout.png
+    cp circos/!{sample}/!{sample}_roundabout.png circos/.
     mv data circos/!{sample}/.
     '''
 }
