@@ -1,0 +1,14 @@
+name: roundabout
+
+channels:
+  - bioconda
+  - conda-forge
+  
+dependencies:
+  - conda-forge::pygenomeviz
+  - daisyblast
+  - heatcluster
+  - minkemap
+  - refseq-plasmid-dl
+  - PlasmidFinder
+  - bakta

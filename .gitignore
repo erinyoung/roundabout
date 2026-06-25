@@ -1,0 +1,76 @@
+# ==========================================
+# 1. Python Build, Packaging & Distribution
+# ==========================================
+# Generated when running 'pip install -e .' or building wheels
+bin/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==========================================
+# 2. Python Bytecode, Caches & Runtimes
+# ==========================================
+# Compiled python files (speeds up execution, shouldn't be tracked)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ==========================================
+# 3. Environment & Package Managers
+# ==========================================
+# In case you create local conda or virtual environments inside the repo
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# ==========================================
+# 4. Pipeline Execution Outputs & Test Data
+# ==========================================
+# Keeps actual bioinformatics data runs out of your git history
+results/
+raw_fastas/
+samples/
+test_out/
+*.log
+*.back
+*.tmp
+
+# ==========================================
+# 5. Local Databases (CRITICAL)
+# ==========================================
+# Keeps downloaded Bakta, AMRFinderPlus, and PlasmidFinder DBs out of Git
+*db/
+test_db/
+.roundabout/
+
+# ==========================================
+# 6. OS & IDE Specific Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
