@@ -2,6 +2,7 @@ import os
 import logging
 import itertools
 import statistics
+import subprocess
 from pathlib import Path
 
 from .database import run_setup
@@ -55,6 +56,33 @@ def stage_and_split_fastas(input_dir: Path, staging_dir: Path) -> list[Path]:
                 
     return staged_paths
 
+def generate_global_heatcluster(sim_matrix: dict, outdir: Path):
+    """Takes the global skani matrix, converts it to distance, and runs heatcluster."""
+    logging.info("Generating global heatcluster plot from skani matrix...")
+    global_melted = outdir / "skani_global_melted.txt"
+    global_png = outdir / "skani_global_heatcluster.png"
+    
+    # Write melted distance matrix (Distance = 100 - ANI)
+    with open(global_melted, 'w') as f:
+        for q_name, targets in sim_matrix.items():
+            f.write(f"{q_name}\t{q_name}\t0.0000\n") # Self identity distance is 0
+            for r_name, metrics in targets.items():
+                dist = 100.0 - metrics.get('ani', 0.0)
+                f.write(f"{q_name}\t{r_name}\t{dist:.4f}\n")
+                f.write(f"{r_name}\t{q_name}\t{dist:.4f}\n") # Ensure symmetry
+                
+    cmd = [
+        "heatcluster",
+        "-i", str(global_melted),
+        "--format", "melted",
+        "-o", str(global_png),
+        "--title", "Global Sequence Distance (skani)"
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Global heatcluster failed:\n{e.stderr}")
+
 def run_pipeline(args):
     """Orchestrates the Roundabout horizontal gene transfer pipeline."""
     
@@ -103,10 +131,11 @@ def run_pipeline(args):
         logging.warning("PlasmidFinder database missing; skipping PlasmidFinder.")
 
     # Bakta
-    #if db_dict.get("bakta"):
-    #    execute_bakta_parallel(staged_fasta_paths, args.outdir, db_dict["bakta"], args.threads)
-    #else:
-    #    logging.warning("Bakta database missing; skipping Bakta.")
+    if db_dict.get("bakta"):
+        execute_bakta_parallel(staged_fasta_paths, args.outdir, db_dict["bakta"], args.threads)
+        # TODO: Run PyGenomeViz wrapper here on Bakta GenBank results
+    else:
+        logging.warning("Bakta database missing; skipping Bakta.")
 
     # -------------------------------------------------------------------------
     # STEP 3: Sequence Comparison & Grouping
@@ -115,9 +144,13 @@ def run_pipeline(args):
     amr_dir = Path(args.outdir) / "amrfinder_results"
     pf_dir = Path(args.outdir) / "plasmidfinder_results"
     
-    # 1. Execute the biological marker parsers
+    # 1. Execute the biological marker parsers (Filtered for grouping)
     amr_groups = parse_amrfinder_results(amr_dir, substring=args.amr_gene)
     inc_groups = parse_plasmidfinder_results(pf_dir, substring=args.plasmidfinder_string)
+    
+    # Unfiltered parsers strictly for populating the info.txt files later
+    unfiltered_amr = parse_amrfinder_results(amr_dir, substring=None)
+    unfiltered_inc = parse_plasmidfinder_results(pf_dir, substring=None)
     
     # 2. Execute skani for Sequence Identity Grouping
     refseq_fasta = None
@@ -131,6 +164,9 @@ def run_pipeline(args):
     # Execute Skani and parse matrix
     skani_tsv = execute_skani(staged_fasta_paths, refseq_fasta, Path(args.outdir), args.threads)
     sim_matrix = parse_skani_matrix(skani_tsv)
+    
+    # Run global heatcluster immediately on the full matrix
+    generate_global_heatcluster(sim_matrix, Path(args.outdir))
     
     input_names = [f.stem for f in staged_fasta_paths]
     
@@ -152,30 +188,18 @@ def run_pipeline(args):
     unique_groups = {}
     
     def register_cohort(samples: list, category: str, detail: str):
-        """Registers a group exactly as defined. Only merges if the exact same sequences share another trait."""
         if len(samples) > 1:
             cohort = frozenset(samples)
             if cohort not in unique_groups:
                 unique_groups[cohort] = {'amr': [], 'inc': [], 'identity': []}
             unique_groups[cohort][category].append(detail)
 
-    # Rule 1: Group by shared AMR (divergent or not)
-    for amr_gene, samples in amr_groups.items():
-        register_cohort(samples, 'amr', amr_gene)
-        
-    # Rule 2: Group by shared Plasmid targets
-    for inc_gene, samples in inc_groups.items():
-        register_cohort(samples, 'inc', inc_gene)
-        
-    # Rule 3: Group by sequence identity (Sentinel Networks)
-    for sentinel, samples in l_strict.items():
-        register_cohort(samples, 'identity', f"Local Strict (Sentinel: {sentinel})")
-    for sentinel, samples in l_contain.items():
-        register_cohort(samples, 'identity', f"Local Contained (Sentinel: {sentinel})")
-    for sentinel, samples in g_strict.items():
-        register_cohort(samples, 'identity', f"Global Strict (Sentinel: {sentinel})")
-    for sentinel, samples in g_contain.items():
-        register_cohort(samples, 'identity', f"Global Contained (Sentinel: {sentinel})")
+    for amr_gene, samples in amr_groups.items(): register_cohort(samples, 'amr', amr_gene)
+    for inc_gene, samples in inc_groups.items(): register_cohort(samples, 'inc', inc_gene)
+    for sentinel, samples in l_strict.items(): register_cohort(samples, 'identity', f"Local Strict (Sentinel: {sentinel})")
+    for sentinel, samples in l_contain.items(): register_cohort(samples, 'identity', f"Local Contained (Sentinel: {sentinel})")
+    for sentinel, samples in g_strict.items(): register_cohort(samples, 'identity', f"Global Strict (Sentinel: {sentinel})")
+    for sentinel, samples in g_contain.items(): register_cohort(samples, 'identity', f"Global Contained (Sentinel: {sentinel})")
     
     logging.info("=" * 60)
     logging.info("ROUNDABOUT PIPELINE GROUPING SUMMARY")
@@ -187,13 +211,6 @@ def run_pipeline(args):
     # STEP 4: Process the Cohorts and Write Output
     # -------------------------------------------------------------------------
 
-    # TODO : list all AMR genes that are shared within a cohort, and all plasmid replicons that are shared within a cohort, in the info.txt file for each group, even if they were filtered out.
-    # TODO : for input files that share plasmids, or AMR genes, or are similar: run daisyblast, heatcluster (with subset of skani results), and minkemap
-    # TODO : for input files that are similar to the RefSeq plasmids, run minkemap, run heatcluster, but with a subset of the matrix that drops sequences that are too divergent
-    # TODO : run heatcluster on the entire skani matrix for all input sequences
-    # TODO : replace nucmer with skani. there should be no nucmer references
-    # TODO : ensure that threads information is being passed to all relevant functions
-
     for idx, (samples_set, traits) in enumerate(unique_groups.items(), start=1):
         group_name = f"group_{idx}"
         samples_list = list(samples_set)
@@ -201,13 +218,9 @@ def run_pipeline(args):
         # Calculate pairwise similarities for this specific cohort using the skani matrix
         pairwise_anis = []
         for a, b in itertools.combinations(samples_list, 2):
-            # Check a -> b
             ani = sim_matrix.get(a, {}).get(b, {}).get('ani')
             if ani is None:
-                # Check b -> a (since matrix might be directional)
                 ani = sim_matrix.get(b, {}).get(a, {}).get('ani')
-                
-            # If skani didn't report an alignment, they are too divergent (0%)
             pairwise_anis.append(ani if ani is not None else 0.0)
 
         if pairwise_anis:
@@ -220,19 +233,27 @@ def run_pipeline(args):
         group_outdir = Path(args.outdir) / group_name
         group_outdir.mkdir(parents=True, exist_ok=True)
         
-        # The info.txt now states exactly WHY this specific group was formed
+        # Determine ALL shared unfiltered traits for this cohort
+        all_shared_amrs = [gene for gene, members in unfiltered_amr.items() if set(samples_list).issubset(set(members))]
+        all_shared_incs = [inc for inc, members in unfiltered_inc.items() if set(samples_list).issubset(set(members))]
+        
+        # The info.txt now states exactly WHY this specific group was formed, plus ALL shared traits
         info_file = group_outdir / "info.txt"
         with open(info_file, 'w') as f:
             f.write(f"Group Name: {group_name}\n")
             f.write(f"Input Sequences ({len(samples_list)}): {', '.join(samples_list)}\n")
-            f.write(f"Grouped By Shared AMR: {', '.join(traits['amr']) if traits['amr'] else 'N/A'}\n")
-            f.write(f"Grouped By Shared Plasmid: {', '.join(traits['inc']) if traits['inc'] else 'N/A'}\n")
-            f.write(f"Grouped By Identity: {', '.join(traits['identity']) if traits['identity'] else 'N/A'}\n")
+            f.write(f"Grouped By Shared AMR Trigger: {', '.join(traits['amr']) if traits['amr'] else 'N/A'}\n")
+            f.write(f"Grouped By Shared Plasmid Trigger: {', '.join(traits['inc']) if traits['inc'] else 'N/A'}\n")
+            f.write(f"Grouped By Identity Trigger: {', '.join(traits['identity']) if traits['identity'] else 'N/A'}\n")
+            f.write("-" * 40 + "\n")
+            f.write(f"ALL Shared AMR Genes (Unfiltered): {', '.join(all_shared_amrs) if all_shared_amrs else 'None'}\n")
+            f.write(f"ALL Shared Plasmid Replicons (Unfiltered): {', '.join(all_shared_incs) if all_shared_incs else 'None'}\n")
+            f.write("-" * 40 + "\n")
             f.write(f"Min Similarity: {min_sim}\n")
             f.write(f"Max Similarity: {max_sim}\n")
             f.write(f"Average Similarity: {avg_sim}\n")
             
-        # Execute downstream analysis
-        analyze_cohort_group(group_name, samples_list, staging_dir, group_outdir, args)
+        # Execute downstream analysis (Passing sim_matrix and threads!)
+        analyze_cohort_group(group_name, samples_list, staging_dir, group_outdir, sim_matrix, args)
 
     logging.info("Roundabout pipeline execution finished successfully!")

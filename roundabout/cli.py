@@ -92,13 +92,15 @@ def run_dependency_checks(check=True):
         "git": "--version",
         "kma": "-v",
         "bakta": "--version",
-        "nucmer": "--version",
+        "skani": "-V",
         "amrfinder": "-v",
         "minimap2": "--version",
         "blastn": "-version",
+        "nucmer": "--version",
+        "mmseqs": "",
         "pgv-mmseqs": "-v",
         "pgv-mummer": "-v",
-        "pgv-pmauve": "-v",
+        # TODO: add progressiveMauve
         "pgv-blast": "-v",
     }
 
@@ -174,7 +176,22 @@ def main(args=None):
         help="Show the application dependencies and exit"
     )
 
-
+    # ---------------------------------------------------------
+    # Grouping Options
+    # ---------------------------------------------------------
+    grouping_parser = cli_parser.add_argument_group("Grouping Options")
+    grouping_parser.add_argument(
+        '--min-identity',
+        type=float,
+        default=95.0,
+        help="Minimum sequence identity percentage for identity-based grouping (default: 95.0)"
+    )
+    grouping_parser.add_argument(
+        '--min-coverage',
+        type=float,
+        default=80.0,
+        help="Minimum alignment fraction (coverage) for identity-based grouping (default: 80.0)"
+    )
 
     db_parser = cli_parser.add_argument_group("Database Options")
     db_parser.add_argument(

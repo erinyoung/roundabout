@@ -1,82 +1,74 @@
+import os
 import csv
 import logging
 import subprocess
 from pathlib import Path
 
-from .run_daisyblast import execute_daisyblast
+def get_symmetric_ani(sim_matrix: dict, a: str, b: str) -> float:
+    """Safely retrieves the highest ANI between two sequences from the skani matrix."""
+    ani_ab = sim_matrix.get(a, {}).get(b, {}).get('ani')
+    ani_ba = sim_matrix.get(b, {}).get(a, {}).get('ani')
+    
+    val_ab = ani_ab if ani_ab is not None else 0.0
+    val_ba = ani_ba if ani_ba is not None else 0.0
+    return max(val_ab, val_ba)
 
-def run_nucmer_pairwise(query: Path, ref: Path, out_prefix: Path, threads: int) -> float:
+def order_sequences_by_similarity(samples: list[str], sim_matrix: dict) -> list[str]:
     """
-    Runs nucmer between two sequences and calculates a custom distance score.
-    Returns: 100.0 - % Identity of aligned regions (or 100.0 if no alignment).
-    Compatible with both MUMmer 3 (single-threaded) and MUMmer 4 engines.
+    Uses a greedy chain algorithm to optimally order sequences so highly 
+    similar neighbors are adjacent (crucial for PyGenomeViz synteny ribbons).
     """
-    # Remove the '-t' option entirely to remain compatible with older system-installed nucmer engines
-    nucmer_cmd = [
-        "nucmer",
-        "--maxmatch",
-        "-p", str(out_prefix),
-        str(ref),
-        str(query)
-    ]
-    
-    res = subprocess.run(nucmer_cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        logging.error(f"REAL NUCMER ERROR OUTPUT:\nSTDOUT: {res.stdout}\nSTDERR: {res.stderr}")
-        raise subprocess.CalledProcessError(res.returncode, nucmer_cmd)
-    
-    delta_file = f"{out_prefix}.delta"
-    coords_cmd = ["show-coords", "-r", "-c", "-l", delta_file]
-    result = subprocess.run(coords_cmd, check=True, capture_output=True, text=True)
-    
-    for ext in [".delta", ".ntref", ".mgaps"]:
-        f_path = Path(f"{out_prefix}{ext}")
-        if f_path.exists():
-            f_path.unlink()
-
-    lines = result.stdout.strip().split('\n')
-    total_aligned_len = 0
-    weighted_identity_sum = 0.0
-    
-    data_started = False
-    for line in lines:
-        if "====" in line:
-            data_started = True
-            continue
-        if not data_started or not line.strip():
-            continue
-            
-        parts = line.split()
-        if len(parts) >= 10:
-            try:
-                idy_val = None
-                for token in parts:
-                    if '.' in token and token.replace('.', '', 1).isdigit():
-                        val = float(token)
-                        if 0.0 <= val <= 100.0:
-                            idy_val = val
-                            break
-                
-                align_len = int(parts[4]) 
-                
-                if idy_val is not None and align_len > 0:
-                    total_aligned_len += align_len
-                    weighted_identity_sum += (idy_val * align_len)
-            except (ValueError, IndexError):
-                continue
-
-    if total_aligned_len == 0:
-        return 100.0  
+    if len(samples) <= 2:
+        return samples
         
-    avg_identity = weighted_identity_sum / total_aligned_len
-    return 100.0 - avg_identity
-
+    unplaced = set(samples)
+    
+    best_ani = -1.0
+    seed_pair = (samples[0], samples[1])
+    
+    for i in range(len(samples)):
+        for j in range(i + 1, len(samples)):
+            ani = get_symmetric_ani(sim_matrix, samples[i], samples[j])
+            if ani > best_ani:
+                best_ani = ani
+                seed_pair = (samples[i], samples[j])
+                
+    ordered_chain = [seed_pair[0], seed_pair[1]]
+    unplaced.remove(seed_pair[0])
+    unplaced.remove(seed_pair[1])
+    
+    while unplaced:
+        best_ani_overall = -1.0
+        best_candidate = None
+        best_position = None 
+        
+        left_end = ordered_chain[0]
+        right_end = ordered_chain[-1]
+        
+        for candidate in unplaced:
+            ani_left = get_symmetric_ani(sim_matrix, candidate, left_end)
+            if ani_left > best_ani_overall:
+                best_ani_overall = ani_left
+                best_candidate = candidate
+                best_position = 'left'
+                
+            ani_right = get_symmetric_ani(sim_matrix, candidate, right_end)
+            if ani_right > best_ani_overall:
+                best_ani_overall = ani_right
+                best_candidate = candidate
+                best_position = 'right'
+                
+        if best_position == 'left':
+            ordered_chain.insert(0, best_candidate)
+        else:
+            ordered_chain.append(best_candidate)
+            
+        unplaced.remove(best_candidate)
+        
+    return ordered_chain
 
 def generate_amr_highlights(ref_name: str, amr_dir: Path, output_csv: Path):
-    """
-    Parses the AMRFinderPlus TSV for the current reference sequence and generates
-    a MinkeMap-compatible highlights CSV for any detected AMR genes.
-    """
+    """Parses AMRFinder TSV to generate MinkeMap AMR highlights."""
     tsv_file = amr_dir / f"{ref_name}_amrfinder.tsv"
     if not tsv_file.exists():
         return False
@@ -88,12 +80,13 @@ def generate_amr_highlights(ref_name: str, amr_dir: Path, output_csv: Path):
             gene = row.get('Element symbol') or row.get('Gene symbol') or row.get('Sequence name')
             start = row.get('Start')
             stop = row.get('Stop')
+            el_type = str(row.get('Element type') or "").strip().lower()
             
-            if gene and start and stop and row.get('Element type') == 'AMR':
+            if gene and start and stop and el_type == 'amr':
                 highlights.append({
                     'start': start,
                     'end': stop,
-                    'color': '#ffcccc',  # Light transparent red wedge
+                    'color': '#ffcccc',
                     'label': gene
                 })
                 
@@ -106,93 +99,98 @@ def generate_amr_highlights(ref_name: str, amr_dir: Path, output_csv: Path):
         
     return False
 
+def extract_fasta_from_refseq(name: str, refseq_fasta: Path, outdir: Path):
+    """Extracts a specific sequence from the multi-FASTA RefSeq database on the fly."""
+    if not refseq_fasta or not refseq_fasta.exists():
+        return None
+        
+    out_path = outdir / f"{name}.fasta"
+    if out_path.exists():
+        return out_path 
+        
+    with open(refseq_fasta, 'r') as f:
+        lines = []
+        capturing = False
+        for line in f:
+            if line.startswith(">"):
+                if capturing:
+                    break  # We got our sequence, stop reading
+                if name in line:
+                    capturing = True
+                    lines.append(line)
+            elif capturing:
+                lines.append(line)
+                
+    if capturing:
+        outdir.mkdir(parents=True, exist_ok=True)
+        with open(out_path, 'w') as f:
+            f.writelines(lines)
+        return out_path
+        
+    return None
 
-# Change the parameter from 'base_outdir' to 'group_outdir'
-def analyze_cohort_group(group_name: str, sample_names: list[str], staging_dir: Path, group_outdir: Path, args):
+def analyze_cohort_group(group_name: str, sample_names: list[str], staging_dir: Path, group_outdir: Path, sim_matrix: dict, args):
     """
-    Runs DaisyBlast, Nucmer All-vs-All, HeatCluster, and MinkeMap sequentially for a cohort.
+    Runs downstream analysis for a specific cohort.
+    Uses the pre-calculated skani matrix to bypass redundant alignments.
     """
     logging.info(f"=== Processing Cohort Group: {group_name} ({len(sample_names)} sequences) ===")
     
-    # We retrieve the base_outdir by going up one level from group_outdir
-    # so we can still find the amrfinder_results directory for MinkeMap highlights
     base_outdir = group_outdir.parent
     amr_dir = base_outdir / "amrfinder_results"
     
-    group_fastas = []
-    for name in sample_names:
-        fasta_path = staging_dir / f"{name}.fasta"
-        if fasta_path.exists():
-            group_fastas.append(fasta_path)
-
-    if len(group_fastas) < 2:
-        logging.warning(f"Not enough valid FASTAs to compare in group {group_name}. Skipping.")
-        return
-
-    threads = getattr(args, 'threads', 4)
-
     # -------------------------------------------------------------------------
-    # A. DaisyBlast
+    # A. Write Cohort Distance Matrix & Run HeatCluster
     # -------------------------------------------------------------------------
-    execute_daisyblast(group_fastas, str(group_outdir), args)
-
-    # TODO replace nucmer with skani for all-vs-all distance matrix generation, as skani is faster and more efficient for large datasets.
-    # TODO: put skani results into heatcluster    
-
-    # # -------------------------------------------------------------------------
-    # # B. Nucmer All-vs-All Distance Matrix
-    # # -------------------------------------------------------------------------
-    # logging.info(f"Running pairwise Nucmer alignments for {group_name}...")
-    # melted_matrix_tsv = group_outdir / "nucmer_melted_matrix.txt"
+    logging.info(f"Generating HeatCluster plot for {group_name}...")
+    melted_matrix_tsv = group_outdir / f"{group_name}_distance_matrix.txt"
+    heat_out_png = group_outdir / f"{group_name}_heatcluster.png"
     
-    # with open(melted_matrix_tsv, 'w') as out_f:
-    #     for i, query_f in enumerate(group_fastas):
-    #         for j, ref_f in enumerate(group_fastas):
-    #             q_name = query_f.stem
-    #             r_name = ref_f.stem
+    with open(melted_matrix_tsv, 'w') as out_f:
+        for i, q_name in enumerate(sample_names):
+            out_f.write(f"{q_name}\t{q_name}\t0.0000\n")
+            for j in range(i + 1, len(sample_names)):
+                r_name = sample_names[j]
+                ani = get_symmetric_ani(sim_matrix, q_name, r_name)
+                dist = 100.0 - ani if ani > 0 else 100.0
                 
-    #             if i == j:
-    #                 out_f.write(f"{q_name}\t{r_name}\t0.0\n")
-    #             elif i > j:
-    #                 continue 
-    #             else:
-    #                 prefix = group_outdir / f"temp_{q_name}_vs_{r_name}"
-    #                 #try:
-    #                     #distance = run_nucmer_pairwise(query_f, ref_f, prefix, threads)
-    #                 #except Exception as e:
-    #                     #logging.error(f"Nucmer alignment failed between {q_name} and {r_name}: {e}")
-    #                     #distance = 100.0
-                    
-    #                 #out_f.write(f"{q_name}\t{r_name}\t{distance:.4f}\n")
-    #                 #out_f.write(f"{r_name}\t{q_name}\t{distance:.4f}\n")
+                out_f.write(f"{q_name}\t{r_name}\t{dist:.4f}\n")
+                out_f.write(f"{r_name}\t{q_name}\t{dist:.4f}\n")
 
-    # # -------------------------------------------------------------------------
-    # # C. HeatCluster
-    # # -------------------------------------------------------------------------
-    # logging.info(f"Running HeatCluster for {group_name}...")
-    # # Updated to just use group_name (e.g., group_1_heatcluster.png)
-    # heat_out_png = group_outdir / f"{group_name}_heatcluster.png"
-    
-    # if melted_matrix_tsv.exists():
-    #     heatcluster_cmd = [
-    #         "heatcluster",
-    #         "-i", str(melted_matrix_tsv),
-    #         "--format", "melted",  
-    #         "-o", str(heat_out_png),
-    #         "--title", f"Sequence Distance (Nucmer): {group_name}"
-    #     ]
-    #     try:
-    #         subprocess.run(heatcluster_cmd, check=True, capture_output=True, text=True)
-    #         logging.info(f"Saved HeatCluster plot to {heat_out_png.name}")
-    #     except subprocess.CalledProcessError as e:
-    #         logging.error(f"HeatCluster failed for {group_name}. Error:\n{e.stderr}")
+    heatcluster_cmd = [
+        "heatcluster",
+        "-i", str(melted_matrix_tsv),
+        "--format", "melted",  
+        "-o", str(heat_out_png),
+        "--title", f"Sequence Distance: {group_name}"
+    ]
+    try:
+        subprocess.run(heatcluster_cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        logging.error(f"HeatCluster failed for {group_name}. Error:\n{e.stderr}")
 
     # -------------------------------------------------------------------------
-    # D. MinkeMap (Concentric Reference Permutations with AMR Highlights)
+    # B. MinkeMap 
     # -------------------------------------------------------------------------
     logging.info(f"Running MinkeMap permutations for {group_name}...")
     minke_outdir = group_outdir / "minkemap_results"
     minke_outdir.mkdir(exist_ok=True)
+    
+    # Identify the RefSeq Database Path
+    refseq_db_str = getattr(args, 'refseq_plasmid_dl_db', None)
+    refseq_fasta = Path(str(refseq_db_str)) / "refseq_plasmids_dl.fasta" if refseq_db_str else None
+    refseq_extract_dir = group_outdir / "refseq_fastas"
+    
+    # Gather all FASTAs (Inputs + On-the-fly extracted RefSeq)
+    group_fastas = []
+    for name in sample_names:
+        staging_path = staging_dir / f"{name}.fasta"
+        if staging_path.exists():
+            group_fastas.append(staging_path)
+        else:
+            extracted_path = extract_fasta_from_refseq(name, refseq_fasta, refseq_extract_dir)
+            if extracted_path:
+                group_fastas.append(extracted_path)
     
     for ref_fasta in group_fastas:
         ref_name = ref_fasta.stem
@@ -212,15 +210,68 @@ def analyze_cohort_group(group_name: str, sample_names: list[str], staging_dir: 
         
         highlights_csv = minke_outdir / f"highlights_{ref_name}.csv"
         if generate_amr_highlights(ref_name, amr_dir, highlights_csv):
-            logging.info(f"   Found AMR genes for {ref_name}. Adding visual wedges to plot.")
             minkemap_cmd += ["--highlights", str(highlights_csv)]
         
         try:
-            logging.info(f"   -> Mapping cohort against reference base: {ref_name}...")
             subprocess.run(minkemap_cmd, check=True, capture_output=True, text=True)
-            
-            if highlights_csv.exists():
-                highlights_csv.unlink()
-                
+            if highlights_csv.exists(): highlights_csv.unlink()
         except subprocess.CalledProcessError as e:
-            logging.error(f"MinkeMap failed for reference base {ref_name}. Error:\n{e.stderr}")
+            logging.error(f"MinkeMap failed for {ref_name}. Error:\n{e.stderr}")
+
+    # -------------------------------------------------------------------------
+    # C. PyGenomeViz (Optimally Ordered via MMseqs2, MUMmer, and BLAST)
+    # -------------------------------------------------------------------------
+    logging.info(f"Running PyGenomeViz synteny plots for {group_name}...")
+    pgv_outdir = group_outdir / "pygenomeviz_results"
+    pgv_outdir.mkdir(exist_ok=True)
+    
+    # Optimally order the sequences
+    ordered_names = order_sequences_by_similarity(sample_names, sim_matrix)
+    
+    # Gather files (Prefer Bakta GenBank for feature arrows, fallback to raw FASTA)
+    bakta_dir = base_outdir / "bakta_results"
+    ordered_pgv_paths = []
+    
+    for name in ordered_names:
+        gbff_path = bakta_dir / name / f"{name}.gbff"
+        gbk_path = bakta_dir / name / f"{name}.gbk"
+        fasta_path = staging_dir / f"{name}.fasta"
+        refseq_path = refseq_extract_dir / f"{name}.fasta"
+        
+        if gbff_path.exists():
+            ordered_pgv_paths.append(str(gbff_path))
+        elif gbk_path.exists():
+            ordered_pgv_paths.append(str(gbk_path))
+        elif fasta_path.exists():
+            ordered_pgv_paths.append(str(fasta_path))
+        elif refseq_path.exists():
+            # If it's a RefSeq sequence, it will use the extracted FASTA we made for MinkeMap!
+            ordered_pgv_paths.append(str(refseq_path))
+        else:
+            if " " not in name:
+                logging.warning(f"   -> Missing both GenBank and FASTA for {name}. Dropping from PyGenomeViz.")
+
+    if len(ordered_pgv_paths) >= 2:
+        # 1. MMSeqs2 (Removed the -t flag)
+        mmseqs_out = pgv_outdir / f"{group_name}_mmseqs.png"
+        pgv_mmseqs_cmd = ["pgv-mmseqs", *ordered_pgv_paths, "-o", str(mmseqs_out)]
+        try:
+            subprocess.run(pgv_mmseqs_cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"pgv-mmseqs failed for {group_name}:\n{e.stderr}")
+
+        # 2. MUMmer (Removed the -t flag)
+        mummer_out = pgv_outdir / f"{group_name}_mummer.png"
+        pgv_mummer_cmd = ["pgv-mummer", *ordered_pgv_paths, "-o", str(mummer_out)]
+        try:
+            subprocess.run(pgv_mummer_cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"pgv-mummer failed for {group_name}:\n{e.stderr}")
+
+        # 3. BLAST (Removed the -t flag)
+        blast_out = pgv_outdir / f"{group_name}_blast.png"
+        pgv_blast_cmd = ["pgv-blast", *ordered_pgv_paths, "-o", str(blast_out)]
+        try:
+            subprocess.run(pgv_blast_cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"pgv-blast failed for {group_name}:\n{e.stderr}")
