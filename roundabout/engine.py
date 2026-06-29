@@ -2,7 +2,6 @@ import os
 import logging
 import itertools
 import statistics
-import subprocess
 from pathlib import Path
 
 from .database import run_setup
@@ -17,10 +16,15 @@ from .run_parsing import (
 )
 from .run_similarity import (
     execute_skani, 
-    parse_skani_matrix, 
+    parse_skani_results,
+    create_local_ani_matrix,
+    visualize_skani_matrix,
+    extract_global_hits,
+    visualize_global_matches_scatter,  # Updated import
     build_sentinel_groups
 )
 from .run_group_analysis import analyze_cohort_group
+from .run_heatcluster import run_heatcluster
 
 def stage_and_split_fastas(input_dir: Path, staging_dir: Path) -> list[Path]:
     """
@@ -56,33 +60,6 @@ def stage_and_split_fastas(input_dir: Path, staging_dir: Path) -> list[Path]:
                 
     return staged_paths
 
-def generate_global_heatcluster(sim_matrix: dict, outdir: Path):
-    """Takes the global skani matrix, converts it to distance, and runs heatcluster."""
-    logging.info("Generating global heatcluster plot from skani matrix...")
-    global_melted = outdir / "skani_global_melted.txt"
-    global_png = outdir / "skani_global_heatcluster.png"
-    
-    # Write melted distance matrix (Distance = 100 - ANI)
-    with open(global_melted, 'w') as f:
-        for q_name, targets in sim_matrix.items():
-            f.write(f"{q_name}\t{q_name}\t0.0000\n") # Self identity distance is 0
-            for r_name, metrics in targets.items():
-                dist = 100.0 - metrics.get('ani', 0.0)
-                f.write(f"{q_name}\t{r_name}\t{dist:.4f}\n")
-                f.write(f"{r_name}\t{q_name}\t{dist:.4f}\n") # Ensure symmetry
-                
-    cmd = [
-        "heatcluster",
-        "-i", str(global_melted),
-        "--format", "melted",
-        "-o", str(global_png),
-        "--title", "Global Sequence Distance (skani)"
-    ]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Global heatcluster failed:\n{e.stderr}")
-
 def run_pipeline(args):
     """Orchestrates the Roundabout horizontal gene transfer pipeline."""
     
@@ -115,59 +92,100 @@ def run_pipeline(args):
     logging.info(f"Successfully staged {len(staged_fasta_paths)} individual FASTA sequences.")
 
     # -------------------------------------------------------------------------
-    # STEP 2: Parallel Annotation
+    # STEP 2: Annotation
     # -------------------------------------------------------------------------
     
-    # AMRFinderPlus
-    if db_dict.get("amrfinder"):
-        execute_amrfinder_parallel(staged_fasta_paths, args.outdir, db_dict["amrfinder"], args.threads)
-    else:
-        logging.warning("AMRFinderPlus database missing; skipping AMRFinderPlus.")
+    # # AMRFinderPlus
+    # amr_dict = {}
+    # if db_dict.get("amrfinder"):
+    #     amr_dict = execute_amrfinder_parallel(staged_fasta_paths, args.outdir, db_dict["amrfinder"], args.threads)
+    # else:
+    #     logging.warning("AMRFinderPlus database missing; skipping AMRFinderPlus.")
 
-    # PlasmidFinder
-    if db_dict.get("plasmidfinder"):
-        execute_plasmidfinder_parallel(staged_fasta_paths, args.outdir, db_dict["plasmidfinder"], args.threads)
-    else:
-        logging.warning("PlasmidFinder database missing; skipping PlasmidFinder.")
+    # total_isolates = len(amr_dict)
+    # isolates_with_genes = sum(1 for genes in amr_dict.values() if genes)
+    # empty_isolates = total_isolates - isolates_with_genes
+
+    # logging.info(f"AMRFinderPlus parsing complete: {total_isolates} total isolates processed. "
+    #             f"{isolates_with_genes} carried AMR genes, {empty_isolates} had no hits.")
+
+    # # PlasmidFinder
+    # pf_dict = {}
+    # if db_dict.get("plasmidfinder"):
+    #     pf_dict = execute_plasmidfinder_parallel(staged_fasta_paths, args.outdir, db_dict["plasmidfinder"], args.threads)
+    # else:
+    #     logging.warning("PlasmidFinder database missing; skipping PlasmidFinder.")
+
+    # total_isolates = len(pf_dict)
+    # isolates_with_plasmids = sum(1 for plasmids in pf_dict.values() if plasmids)
+    # empty_isolates = total_isolates - isolates_with_plasmids
+
+    # logging.info(f"PlasmidFinder parsing complete: {total_isolates} isolates processed. "
+    #              f"{isolates_with_plasmids} carried plasmids, {empty_isolates} had no hits.")
+
+    # TODO: Insertion sequences
+    # TODO: Prophages
 
     # Bakta
-    if db_dict.get("bakta"):
-        execute_bakta_parallel(staged_fasta_paths, args.outdir, db_dict["bakta"], args.threads)
-        # TODO: Run PyGenomeViz wrapper here on Bakta GenBank results
-    else:
-        logging.warning("Bakta database missing; skipping Bakta.")
+    # if db_dict.get("bakta"):
+    #    execute_bakta_parallel(staged_fasta_paths, args.outdir, db_dict["bakta"], args.threads)
+    # else:
+    #    logging.warning("Bakta database missing; skipping Bakta.")
 
     # -------------------------------------------------------------------------
-    # STEP 3: Sequence Comparison & Grouping
+    # STEP 3: Sequence Comparison with Skani
     # -------------------------------------------------------------------------
- 
-    amr_dir = Path(args.outdir) / "amrfinder_results"
-    pf_dir = Path(args.outdir) / "plasmidfinder_results"
-    
-    # 1. Execute the biological marker parsers (Filtered for grouping)
-    amr_groups = parse_amrfinder_results(amr_dir, substring=args.amr_gene)
-    inc_groups = parse_plasmidfinder_results(pf_dir, substring=args.plasmidfinder_string)
-    
-    # Unfiltered parsers strictly for populating the info.txt files later
-    unfiltered_amr = parse_amrfinder_results(amr_dir, substring=None)
-    unfiltered_inc = parse_plasmidfinder_results(pf_dir, substring=None)
-    
-    # 2. Execute skani for Sequence Identity Grouping
-    refseq_fasta = None
+
     if db_dict.get("refseq_plasmid_dl"):
         db_path = Path(db_dict["refseq_plasmid_dl"]) / "refseq_plasmids_dl.fasta"
-        if db_path.exists():
-            refseq_fasta = db_path
-        else:
-            logging.warning("RefSeq multi-FASTA not found. Skipping global identity grouping.")
+        refseq_fasta = db_path if db_path.exists() else None
+        if not refseq_fasta:
+            logging.warning("RefSeq multi-FASTA not found. Running SKANI on local inputs only.")
+    else:
+        refseq_fasta = None
+        logging.warning("RefSeq database not provided. Running SKANI on local inputs only.")
             
-    # Execute Skani and parse matrix
+    # Execute Skani
+    # Execute Skani
     skani_tsv = execute_skani(staged_fasta_paths, refseq_fasta, Path(args.outdir), args.threads)
-    sim_matrix = parse_skani_matrix(skani_tsv)
+
+    # Parse results into a raw pandas DataFrame
+    raw_skani_df = parse_skani_results(skani_tsv)
     
-    # Run global heatcluster immediately on the full matrix
-    generate_global_heatcluster(sim_matrix, Path(args.outdir))
+    # ---> ADD THIS LINE <---
+    skani_outdir = Path(args.outdir) / "skani_results"
     
+    # 1. Handle Local Matrix and Visualization
+    local_matrix_df = create_local_ani_matrix(raw_skani_df, staged_fasta_paths)
+    heatmap_out = skani_outdir / "local_ani_heatmap.png"
+    visualize_skani_matrix(local_matrix_df, heatmap_out)
+    
+    # Save the local matrix to CSV for your records
+    local_matrix_df.to_csv(skani_outdir / "local_ani_matrix.csv")
+
+    # 2. Handle Global (RefSeq) Hits
+    global_hits_df = extract_global_hits(raw_skani_df, staged_fasta_paths)
+    
+    if not global_hits_df.empty:
+        # Save CSV 
+        global_csv_out = skani_outdir / "global_refseq_hits.csv"
+        global_hits_df.to_csv(global_csv_out, index=False)
+        logging.info(f"Saved global RefSeq hits to {global_csv_out}")
+        
+        # Generate Global Scatter Plot
+        global_scatter_out = skani_outdir / "global_ani_scatter.png"
+        visualize_global_matches_scatter(global_hits_df, global_scatter_out)
+        logging.info(f"Generated global ANI scatter plot at {global_scatter_out}")
+    else:
+        logging.info("No global RefSeq hits were found or RefSeq was not provided.")
+
+    exit(0)
+
+    # -------------------------------------------------------------------------
+    # STEP 4: Grouping
+    # -------------------------------------------------------------------------
+
+    # Similarity grouping
     input_names = [f.stem for f in staged_fasta_paths]
     
     # Dynamically extract any RefSeq hits from the matrix
@@ -183,6 +201,15 @@ def run_pipeline(args):
     l_strict, l_contain, g_strict, g_contain = build_sentinel_groups(
         sim_matrix, input_names, list(refseq_names), min_identity, min_coverage
     )
+
+    # Grouping based on AMRFinderPlus
+    amr_dir = Path(args.outdir) / "amrfinder_results"
+    amr_groups = parse_amrfinder_results(amr_dir, substring=args.amr_gene)
+
+    # Grouping based on PlasmidFinder results
+    
+    pf_dir = Path(args.outdir) / "plasmidfinder_results"   
+    inc_groups = parse_plasmidfinder_results(pf_dir, substring=args.plasmidfinder_string)
     
     # 3. Create discrete groups for exactly what the parsers found
     unique_groups = {}
@@ -208,8 +235,16 @@ def run_pipeline(args):
     logging.info("=" * 60)
     
     # -------------------------------------------------------------------------
-    # STEP 4: Process the Cohorts and Write Output
+    # STEP 5: Process the Cohorts
     # -------------------------------------------------------------------------
+
+    # TODO: run minkemap on each cohort to generate a visual representation of the groupings with and without references
+    # TODO: run daisyblast on each cohort to generate visualizations without references
+    # TODO: run pygenomeviz on bakta out of inputs to create visualizations without references
+    # TODO: create nucmer comparisions of each cohort with and without references to generate visualizations
+    # TODO: pass nucmer output to heatcluster for visualization
+
+    bakta_dir = Path(args.outdir) / "bakta_results"
 
     for idx, (samples_set, traits) in enumerate(unique_groups.items(), start=1):
         group_name = f"group_{idx}"

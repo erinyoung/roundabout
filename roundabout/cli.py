@@ -86,7 +86,8 @@ def run_dependency_checks(check=True):
 
     cli_binaries = {
         "daisyblast": "-v",
-        "heatcluster": "-v",
+        # TODO: add heatcluster
+        #"heatcluster": "-v",
         "minkemap": "-v",
         "refseq-plasmid-dl": "-v",
         "git": "--version",

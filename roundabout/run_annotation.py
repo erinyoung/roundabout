@@ -1,4 +1,5 @@
 import logging
+import csv
 import subprocess
 import concurrent.futures
 from pathlib import Path
@@ -21,21 +22,47 @@ def _run_single_amrfinder(fasta_path: Path, outdir: Path, db_path: str) -> Path:
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     return amr_out
 
-def execute_amrfinder_parallel(fasta_paths: list[Path], outdir: str, db_path: str, threads: int) -> list[Path]:
+def execute_amrfinder_parallel(fasta_paths: list[Path], outdir: str, db_path: str, threads: int) -> dict[str, list[str]]:
     logging.info(f"Running AMRFinderPlus on {len(fasta_paths)} files...")
     amr_outdir = Path(outdir) / "amrfinder_results"
     amr_outdir.mkdir(parents=True, exist_ok=True)
     
-    completed = []
+    # Replaced 'completed' list with a dictionary
+    amr_profiles = {}
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(_run_single_amrfinder, f, amr_outdir, db_path): f for f in fasta_paths}
+        
         for future in concurrent.futures.as_completed(futures):
+            fasta_path = futures[future]
+            
+            # Use the fasta file name (without extension) as the Isolate ID
+            isolate_id = fasta_path.stem 
+            
             try:
-                completed.append(future.result())
+                # Get the output TSV path from your run function
+                tsv_path = future.result()
+                
+                isolate_genes = []
+                
+                # Open and parse the TSV immediately
+                if tsv_path.exists():
+                    with open(tsv_path, mode='r') as file:
+                        reader = csv.DictReader(file, delimiter='\t')
+                        for row in reader:
+                            # Safely extract either 'Element symbol' or 'Gene symbol'
+                            gene = row.get('Element symbol') or row.get('Gene symbol')
+                            if gene:
+                                isolate_genes.append(gene)
+                
+                # Assign the gene list to the isolate in the dictionary
+                amr_profiles[isolate_id] = isolate_genes
+                
             except Exception as e:
-                logging.error(f"AMRFinderPlus failed for {futures[future].name}: {e}")
-    return completed
+                logging.error(f"AMRFinderPlus failed for {fasta_path.name}: {e}")
 
+    return amr_profiles
+    
 # -----------------------------------------------------------------------------
 # PlasmidFinder
 # -----------------------------------------------------------------------------
@@ -59,20 +86,47 @@ def _run_single_plasmidfinder(fasta_path: Path, outdir: Path, db_path: str) -> P
         logging.error(f"PlasmidFinder crashed on {fasta_path.name}. PF Error:\n{e.stderr}\n{e.stdout}")
         raise
 
-def execute_plasmidfinder_parallel(fasta_paths: list[Path], outdir: str, db_path: str, threads: int) -> list[Path]:
+def execute_plasmidfinder_parallel(fasta_paths: list[Path], outdir: str, db_path: str, threads: int) -> dict[str, list[str]]:
     logging.info(f"Running PlasmidFinder on {len(fasta_paths)} files...")
     pf_outdir = Path(outdir) / "plasmidfinder_results"
     pf_outdir.mkdir(parents=True, exist_ok=True)
     
-    completed = []
+    plasmid_profiles = {}
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(_run_single_plasmidfinder, f, pf_outdir, db_path): f for f in fasta_paths}
+        
         for future in concurrent.futures.as_completed(futures):
+            fasta_path = futures[future]
+            isolate_id = fasta_path.stem 
+            
             try:
-                completed.append(future.result())
+                # future.result() is returning the directory, so let's name it appropriately
+                result_dir = Path(future.result()) 
+                
+                # Point directly to the TSV file inside that directory
+                tsv_path = result_dir / "results_tab.tsv"
+                
+                isolate_plasmids = []
+                
+                # Open and parse the TSV immediately
+                if tsv_path.exists():
+                    with open(tsv_path, mode='r') as file:
+                        reader = csv.DictReader(file, delimiter='\t')
+                        for row in reader:
+                            # Safely extract the plasmid column
+                            plasmid = row.get('Plasmid')
+                            if plasmid:
+                                isolate_plasmids.append(plasmid)
+                
+                # Use set() to remove duplicate hits, then save to dict
+                plasmid_profiles[isolate_id] = list(set(isolate_plasmids))
+                
             except Exception as e:
-                logging.error(f"PlasmidFinder failed for {futures[future].name}: {e}")
-    return completed
+                logging.error(f"PlasmidFinder failed for {fasta_path.name}: {e}")
+                plasmid_profiles[isolate_id] = []
+
+    return plasmid_profiles
 
 # -----------------------------------------------------------------------------
 # Bakta
