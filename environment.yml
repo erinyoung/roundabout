@@ -7,7 +7,6 @@ channels:
 dependencies:
   - conda-forge::pygenomeviz
   - daisyblast
-  - heatcluster
   - minkemap
   - refseq-plasmid-dl
   - PlasmidFinder
