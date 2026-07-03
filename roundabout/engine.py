@@ -1,7 +1,5 @@
 import os
 import logging
-import itertools
-import statistics
 from pathlib import Path
 
 from .database import run_setup
@@ -10,31 +8,35 @@ from .run_annotation import (
     execute_plasmidfinder_parallel,
     execute_bakta_parallel
 )
-from .run_parsing import (
-    parse_amrfinder_results, 
-    parse_plasmidfinder_results
+# TODO : define groups by AMR
+from .run_grouping import (
+    define_groups_by_similarity,
+    #define_groups_by_amr,
+    #define_groups_by_plasmid,
+    write_group_summary
 )
 from .run_similarity import (
     execute_skani, 
     parse_skani_results,
     create_local_ani_matrix,
-    visualize_skani_matrix,
-    extract_global_hits,
-    visualize_global_matches_scatter,  # Updated import
-    build_sentinel_groups
+    extract_global_hits
 )
-from .run_group_analysis import analyze_cohort_group
-from .run_heatcluster import run_heatcluster
+from .run_visualize_similarity import (
+    visualize_as_heatmap,
+    visualize_global_matches_scatter
+)
 
-def stage_and_split_fastas(input_dir: Path, staging_dir: Path) -> list[Path]:
+
+def stage_and_split_fastas(input_dir: Path, staging_dir: Path, min_length: int = 0, max_length: int = None) -> list[dict]:
     """
     Reads FASTA files, splits multi-FASTAs into single sequences, 
-    and saves them as individual files in the staging directory.
+    filters them by length, and saves them as individual files.
+    Returns a list of dictionaries containing file metadata.
     """
     logging.info(f"Staging and splitting FASTA files from {input_dir} into {staging_dir}")
     staging_dir.mkdir(parents=True, exist_ok=True)
     
-    staged_paths = []
+    staged_data = []
     
     for ext in ("*.fa", "*.fasta", "*.fna"):
         for file_path in input_dir.glob(ext):
@@ -47,28 +49,220 @@ def stage_and_split_fastas(input_dir: Path, staging_dir: Path) -> list[Path]:
                 lines = rec.strip().split('\n')
                 if not lines:
                     continue
+                
+                # Calculate the actual sequence length (ignore the header)
+                sequence = "".join(lines[1:])
+                seq_length = len(sequence)
+                
+                # Apply length filters
+                if min_length and seq_length < min_length:
+                    continue
+                if max_length and seq_length > max_length:
+                    continue
                     
                 header_id = lines[0].split()[0]
                 # Sanitize the ID for the filesystem
-                safe_id = "".join(c for c in header_id if c.isalnum() or c in ('_', '-'))
-                out_path = staging_dir / f"{file_path.stem}_{safe_id}.fasta"
+                contig_id = "".join(c for c in header_id if c.isalnum() or c in ('_', '-'))
+                
+                # Capture the precise naming metadata
+                parent_name = file_path.stem
+                combined_id = f"{parent_name}_{contig_id}"
+                out_path = staging_dir / f"{combined_id}.fasta"
                 
                 with open(out_path, 'w') as out_f:
                     out_f.write(f">{rec.strip()}\n")
                     
-                staged_paths.append(out_path)
+                # Store it all in a dictionary
+                staged_data.append({
+                    "path": out_path,              
+                    "parent_name": parent_name,    
+                    "contig_id": contig_id,        
+                    "combined_id": combined_id,
+                    "length": seq_length           # Added length to metadata just in case!
+                })
                 
-    return staged_paths
+    return staged_data
 
 def run_pipeline(args):
     """Orchestrates the Roundabout horizontal gene transfer pipeline."""
     
+    # -------------------------------------------------------------------------
+    # Extract and Organize Input Arguments
+    # -------------------------------------------------------------------------
+    
+    # System & Grouping Options
+    threads = args.threads
+    outdir = Path(args.outdir)
+    min_ani = args.min_ani
+    min_ani_fraction_query = args.min_ani_fraction_query
+    min_ani_fraction_ref = args.min_ani_fraction_ref
+    num_references = args.num_references
+    min_contig_length = args.min_contig_length
+    max_contig_length = args.max_contig_length
+
+    # Bakta Options
+    bakta_opts = {
+        "db": args.bakta_db,
+        "genus": args.bakta_genus,
+        "species": args.bakta_species,
+        "strain": args.bakta_strain,
+        "plasmid": args.bakta_plasmid,
+        "complete": args.bakta_complete,
+        "prodigal_tf": args.bakta_prodigal_tf,
+        "translation_table": args.bakta_translation_table,
+        "gram": args.bakta_gram,
+        "locus": args.bakta_locus,
+        "locus_tag": args.bakta_locus_tag,
+        "locus_tag_increment": args.bakta_locus_tag_increment,
+        "keep_contig_headers": args.bakta_keep_contig_headers,
+        "compliant": args.bakta_compliant,
+        "replicons": args.bakta_replicons,
+        "regions": args.bakta_regions,
+        "proteins": args.bakta_proteins,
+        "hmms": args.bakta_hmms,
+        "meta": args.bakta_meta,
+        "partial": args.bakta_partial,
+        "skip_trna": args.bakta_skip_trna,
+        "skip_tmrna": args.bakta_skip_tmrna,
+        "skip_rrna": args.bakta_skip_rrna,
+        "skip_ncrna": args.bakta_skip_ncrna,
+        "skip_ncrna_region": args.bakta_skip_ncrna_region,
+        "skip_crispr": args.bakta_skip_crispr,
+        "skip_cds": args.bakta_skip_cds,
+        "skip_pseudo": args.bakta_skip_pseudo,
+        "skip_gap": args.bakta_skip_gap,
+        "skip_ori": args.bakta_skip_ori,
+        "skip_filter": args.bakta_skip_filter,
+        "skip_plot": args.bakta_skip_plot,
+        "options": args.bakta_options
+    }
+
+    # AMRFinderPlus Options
+    amrfinder_opts = {
+        "db": args.amrfinder_db,
+        "organism": args.amr_organism,
+        "gene": args.amr_gene,
+        "ident_min": args.amr_ident_min,
+        "coverage_min": args.amr_coverage_min,
+        "options": args.amrfinder_options
+    }
+
+    # PlasmidFinder Options
+    plasmidfinder_opts = {
+        "db": args.plasmidfinder_db,
+        "filter_string": args.plasmidfinder_string,
+        "mincov": args.plasmidfinder_mincov,
+        "threshold": args.plasmidfinder_threshold
+    }
+
+    # refseq-plasmid-dl Options
+    refseq_opts = {
+        "db": args.refseq_plasmid_dl_db,
+        "organism": args.refseq_organism,
+        "taxid": args.refseq_taxid,
+        "strain": args.refseq_strain,
+        "isolate": args.refseq_isolate,
+        "host": args.refseq_host,
+        "plasmid_name": args.refseq_plasmid_name,
+        "geo_loc_name": args.refseq_geo_loc_name,
+        "isolation_source": args.refseq_isolation_source,
+        "min_length": args.refseq_min_length,
+        "max_length": args.refseq_max_length,
+        "topology": args.refseq_topology,
+        "min_date": args.refseq_min_date,
+        "max_date": args.refseq_max_date,
+        "min_collection_date": args.refseq_min_collection_date,
+        "max_collection_date": args.refseq_max_collection_date
+    }
+
+    # Skani Options
+    skani_opts = {
+        "min_af": args.skani_min_af,
+        "both_min_af": args.skani_both_min_af,
+        "ci": args.skani_ci,
+        "detailed": args.skani_detailed,
+        "n": args.skani_n,
+        "short_header": args.skani_short_header,
+        "fast": args.skani_fast,
+        "medium": args.skani_medium,
+        "slow": args.skani_slow,
+        "small_genomes": args.skani_small_genomes,
+        "c": args.skani_c,
+        "faster_small": args.skani_faster_small,
+        "m": args.skani_m,
+        "median": args.skani_median,
+        "no_learned_ani": args.skani_no_learned_ani,
+        "no_marker_index": args.skani_no_marker_index,
+        "robust": args.skani_robust,
+        "s": args.skani_s
+    }
+
+    # Daisyblast Options
+    daisyblast_opts = {
+        "evalue": args.daisyblast_evalue,
+        "min_pident": args.daisyblast_min_pident,
+        "min_length": args.daisyblast_min_length,
+        "num_groups": args.daisyblast_num_groups
+    }
+
+    # MinkeMap Options
+    minkemap_opts = {
+        "palette": args.minkemap_palette,
+        "track_width": args.minkemap_track_width,
+        "track_gap": args.minkemap_track_gap,
+        "dpi": args.minkemap_dpi,
+        "no_backbone": args.minkemap_no_backbone,
+        "no_legend": args.minkemap_no_legend,
+        "label_size": args.minkemap_label_size,
+        "title": args.minkemap_title,
+        "gc_skew": args.minkemap_gc_skew,
+        "annotations": args.minkemap_annotations,
+        "highlights": args.minkemap_highlights,
+        "exclude_genes": args.minkemap_exclude_genes,
+        "min_identity": args.minkemap_min_identity,
+        "min_coverage": args.minkemap_min_coverage
+    }
+
+    # Heatcluster Options
+    # heatcluster_opts = {
+    #     "out": args.heatcluster_out,
+    #     "k": args.heatcluster_k,
+    #     "t": args.heatcluster_t,
+    #     "auto_k": args.heatcluster_auto_k,
+    #     "pca": args.heatcluster_pca,
+    #     "pca_out": args.heatcluster_pca_out,
+    #     "title": args.heatcluster_title,
+    #     "cmap": args.heatcluster_cmap,
+    #     "dpi": args.heatcluster_dpi,
+    #     "no_annot": args.heatcluster_no_annot,
+    #     "no_plot": args.heatcluster_no_plot,
+    #     "width": args.heatcluster_width,
+    #     "height": args.heatcluster_height,
+    #     "font_scale": args.heatcluster_font_scale,
+    #     "vmin": args.heatcluster_vmin,
+    #     "vmax": args.heatcluster_vmax,
+    #     "hide_below": args.heatcluster_hide_below,
+    #     "hide_above": args.heatcluster_hide_above,
+    #     "no_cluster": args.heatcluster_no_cluster,
+    #     "dendrogram": args.heatcluster_dendrogram
+    # }
+
+    # PyGenomeViz Options
+    pgv_opts = {
+        "skip_blast": args.pgv_skip_blast,
+        "skip_mummer": args.pgv_skip_mummer,
+        "skip_mmseqs": args.pgv_skip_mmseqs,
+        "skip_pmauve": args.pgv_skip_pmauve,
+        "min_identity": args.pgv_min_identity,
+        "min_length": args.pgv_min_length
+    }
+
     logging.info("Checking databases...")
     db_dict = run_setup(args)
 
     logging.info("Starting Roundabout Pipeline.")
-    logging.info(f"Outputs will be saved to: {args.outdir}")
-    os.makedirs(args.outdir, exist_ok=True)
+    logging.info(f"Outputs will be saved to: {outdir}")
+    os.makedirs(outdir, exist_ok=True)
     
     # -------------------------------------------------------------------------
     # STEP 1: Stage and Split FASTAs
@@ -82,23 +276,40 @@ def run_pipeline(args):
         logging.error(f"Invalid input directory: {fasta_dir}")
         raise FileNotFoundError(f"Invalid input directory: {fasta_dir}")
 
-    staging_dir = Path(args.outdir) / "staging_fastas"
-    staged_fasta_paths = stage_and_split_fastas(fasta_dir, staging_dir)
+    staging_dir = outdir / "staging_fastas"
+    staged_fasta_data = stage_and_split_fastas(
+        fasta_dir, 
+        staging_dir, 
+        min_length=min_contig_length, 
+        max_length=max_contig_length
+    )
     
-    if not staged_fasta_paths:
+    if not staged_fasta_data:
         logging.error("No valid FASTA sequences found to process.")
         raise FileNotFoundError("No valid FASTA sequences found to process.")
         
-    logging.info(f"Successfully staged {len(staged_fasta_paths)} individual FASTA sequences.")
+    logging.info(f"Successfully staged {len(staged_fasta_data)} individual FASTA sequences.")
+
+    # If your execution functions just need a flat list of Path objects:
+    staged_fasta_paths = [item["path"] for item in staged_fasta_data]
 
     # -------------------------------------------------------------------------
     # STEP 2: Annotation
     # -------------------------------------------------------------------------
     
-    # # AMRFinderPlus
+    # -------------------------------------------------------------------------
+    # AMRFinderPlus Execution
+    # -------------------------------------------------------------------------
     # amr_dict = {}
+    # TODO filter genes OUT HERE so the full list still makes it to the final report, but only the filtered ones are used for grouping
     # if db_dict.get("amrfinder"):
-    #     amr_dict = execute_amrfinder_parallel(staged_fasta_paths, args.outdir, db_dict["amrfinder"], args.threads)
+    #     amr_dict = execute_amrfinder_parallel(
+    #         staged_fasta_paths, 
+    #         outdir, 
+    #         db_dict["amrfinder"], 
+    #         threads, 
+    #         amrfinder_opts
+    #     )
     # else:
     #     logging.warning("AMRFinderPlus database missing; skipping AMRFinderPlus.")
 
@@ -107,12 +318,25 @@ def run_pipeline(args):
     # empty_isolates = total_isolates - isolates_with_genes
 
     # logging.info(f"AMRFinderPlus parsing complete: {total_isolates} total isolates processed. "
-    #             f"{isolates_with_genes} carried AMR genes, {empty_isolates} had no hits.")
+    #              f"{isolates_with_genes} carried AMR genes, {empty_isolates} had no hits.")
+    
+    # print(amr_dict)  # <-- Debugging line to inspect the AMRFinderPlus results
+    # line below can be used for debugging to skip the amrfinder step
+    amr_dict = {'4051900_4': ['blaNDM-5'], '4051900_3': [], '4051901_2': ['blaNDM-98'], '4051899_2': ['blaNDM-5'], '4051902_2': ['blaNDM-98'], '4051904_3': [], '4051903_2': ['blaNDM-98'], '4051904_2': ['blaNDM-98'], '4051905_2': ['blaNDM-98'], '4051905_3': [], '4051906_3': [], '4051906_2': ['blaNDM-5'], '4051907_2': ['blaNDM-5'], '4051908_2': ['blaNDM-98']}
 
-    # # PlasmidFinder
-    # pf_dict = {}
+    # -------------------------------------------------------------------------
+    # PlasmidFinder Execution
+    # -------------------------------------------------------------------------
+    pf_dict = {}
+    # TODO filter plasmid identifiers OUT HERE so the full list still makes it to the final report, but only the filtered ones are used for grouping
     # if db_dict.get("plasmidfinder"):
-    #     pf_dict = execute_plasmidfinder_parallel(staged_fasta_paths, args.outdir, db_dict["plasmidfinder"], args.threads)
+    #     pf_dict = execute_plasmidfinder_parallel(
+    #         staged_fasta_paths, 
+    #         outdir, 
+    #         db_dict["plasmidfinder"], 
+    #         threads,
+    #         plasmidfinder_opts
+    #     )
     # else:
     #     logging.warning("PlasmidFinder database missing; skipping PlasmidFinder.")
 
@@ -123,116 +347,110 @@ def run_pipeline(args):
     # logging.info(f"PlasmidFinder parsing complete: {total_isolates} isolates processed. "
     #              f"{isolates_with_plasmids} carried plasmids, {empty_isolates} had no hits.")
 
+    # print(pf_dict)  # <-- Debugging line to inspect the PlasmidFinder results
+    # line below can be used for debugging to skip the plasmidfinder step for dev purposes
+    pf_dict = {'4051901_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051900_4': [], '4051900_3': ['IncM1'], '4051899_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051902_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051903_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051904_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051904_3': ['IncM1'], '4051905_3': ['IncM1'], '4051905_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051906_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051906_3': ['IncM1'], '4051907_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)'], '4051908_2': ['IncFII', 'IncFIA', 'IncFIB(AP001918)']}
+
     # TODO: Insertion sequences
     # TODO: Prophages
 
-    # Bakta
+    # -------------------------------------------------------------------------
+    # Bakta Execution
+    # -------------------------------------------------------------------------
     # if db_dict.get("bakta"):
-    #    execute_bakta_parallel(staged_fasta_paths, args.outdir, db_dict["bakta"], args.threads)
+    #     execute_bakta_parallel(
+    #         staged_fasta_paths, 
+    #         outdir, 
+    #         db_dict["bakta"], 
+    #         threads,
+    #         bakta_opts
+    #     )
     # else:
-    #    logging.warning("Bakta database missing; skipping Bakta.")
+    #     logging.warning("Bakta database missing; skipping Bakta.")
 
     # -------------------------------------------------------------------------
     # STEP 3: Sequence Comparison with Skani
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Skani Execution
+    # -------------------------------------------------------------------------
     if db_dict.get("refseq_plasmid_dl"):
-        db_path = Path(db_dict["refseq_plasmid_dl"]) / "refseq_plasmids_dl.fasta"
-        refseq_fasta = db_path if db_path.exists() else None
-        if not refseq_fasta:
+        refseq_db_dir = Path(db_dict["refseq_plasmid_dl"])
+        refseq_fasta = refseq_db_dir / "refseq_plasmids_dl.fasta"
+        refseq_meta_csv = refseq_db_dir / "refseq_plasmids_dl_metadata.csv"
+        
+        if not refseq_fasta.exists():
+            refseq_fasta = None
             logging.warning("RefSeq multi-FASTA not found. Running SKANI on local inputs only.")
+            
+        if not refseq_meta_csv.exists():
+            refseq_meta_csv = None
+            logging.warning("RefSeq metadata CSV not found. Global hits will lack context.")
     else:
         refseq_fasta = None
+        refseq_meta_csv = None
         logging.warning("RefSeq database not provided. Running SKANI on local inputs only.")
             
     # Execute Skani
-    # Execute Skani
-    skani_tsv = execute_skani(staged_fasta_paths, refseq_fasta, Path(args.outdir), args.threads)
+    # skani_tsv = execute_skani(staged_fasta_paths, refseq_fasta, Path(args.outdir), threads, skani_opts)
+
+    # print(skani_tsv)
+    skani_tsv = 'results/skani_results/skani_matrix.tsv'
 
     # Parse results into a raw pandas DataFrame
     raw_skani_df = parse_skani_results(skani_tsv)
     
-    # ---> ADD THIS LINE <---
-    skani_outdir = Path(args.outdir) / "skani_results"
-    
-    # 1. Handle Local Matrix and Visualization
+    # Extract matrices and hits
     local_matrix_df = create_local_ani_matrix(raw_skani_df, staged_fasta_paths)
-    heatmap_out = skani_outdir / "local_ani_heatmap.png"
-    visualize_skani_matrix(local_matrix_df, heatmap_out)
-    
-    # Save the local matrix to CSV for your records
-    local_matrix_df.to_csv(skani_outdir / "local_ani_matrix.csv")
+    global_hits_df = extract_global_hits(raw_skani_df, staged_fasta_paths, refseq_meta_csv)
 
-    # 2. Handle Global (RefSeq) Hits
-    global_hits_df = extract_global_hits(raw_skani_df, staged_fasta_paths)
+    # -------------------------------------------------------------------------
+    # Visualizations & Clustering
+    # -------------------------------------------------------------------------
+    logging.info("Generating clustered ANI heatmap...")
     
-    if not global_hits_df.empty:
-        # Save CSV 
-        global_csv_out = skani_outdir / "global_refseq_hits.csv"
-        global_hits_df.to_csv(global_csv_out, index=False)
-        logging.info(f"Saved global RefSeq hits to {global_csv_out}")
-        
-        # Generate Global Scatter Plot
-        global_scatter_out = skani_outdir / "global_ani_scatter.png"
-        visualize_global_matches_scatter(global_hits_df, global_scatter_out)
-        logging.info(f"Generated global ANI scatter plot at {global_scatter_out}")
-    else:
-        logging.info("No global RefSeq hits were found or RefSeq was not provided.")
+    # We already defined outdir = Path(args.outdir) at the top of run_pipeline
+    skani_outdir = outdir / "skani_results"
+    
+    # 1. Local Clustermap
+    basic_heatmap_path = skani_outdir / "local_ani_clustermap.png"
+    visualize_as_heatmap(local_matrix_df, basic_heatmap_path)
+    logging.info(f"Saved ANI clustermap to {basic_heatmap_path}")
 
-    exit(0)
+    # 2. Global Scatter Plot
+    logging.info("Generating global RefSeq matches scatter plot...")
+    global_scatter_path = skani_outdir / "global_ani_scatter.png"
+    visualize_global_matches_scatter(global_hits_df, global_scatter_path)
+    logging.info(f"Saved global scatter plot to {global_scatter_path}")
 
     # -------------------------------------------------------------------------
     # STEP 4: Grouping
     # -------------------------------------------------------------------------
 
-    # Similarity grouping
-    input_names = [f.stem for f in staged_fasta_paths]
+    # -------------------------------------------------------------------------
+    # Group Assignment & Reporting
+    # -------------------------------------------------------------------------
+    seq_to_group, unique_similarity_groups = define_groups_by_similarity(
+        local_matrix_df, 
+        global_hits_df, 
+        min_ani,
+        min_ani_fraction_query,
+        min_ani_fraction_ref,
+        num_references
+    )
     
-    # Dynamically extract any RefSeq hits from the matrix
-    refseq_names = set()
-    for targets in sim_matrix.values():
-        for r_name in targets.keys():
-            if r_name not in input_names:
-                refseq_names.add(r_name)
-    
-    min_identity = getattr(args, 'min_identity', 95.0)
-    min_coverage = getattr(args, 'min_coverage', 80.0) 
-    
-    l_strict, l_contain, g_strict, g_contain = build_sentinel_groups(
-        sim_matrix, input_names, list(refseq_names), min_identity, min_coverage
+    # TODO : Implement define_groups_by_amr and define_groups_by_plasmid for additional grouping strategies
+
+    # Generate and save the sheet using the outdir path
+    group_report_csv = write_group_summary(
+        unique_similarity_groups, 
+        local_matrix_df, 
+        global_hits_df, 
+        outdir
     )
 
-    # Grouping based on AMRFinderPlus
-    amr_dir = Path(args.outdir) / "amrfinder_results"
-    amr_groups = parse_amrfinder_results(amr_dir, substring=args.amr_gene)
-
-    # Grouping based on PlasmidFinder results
-    
-    pf_dir = Path(args.outdir) / "plasmidfinder_results"   
-    inc_groups = parse_plasmidfinder_results(pf_dir, substring=args.plasmidfinder_string)
-    
-    # 3. Create discrete groups for exactly what the parsers found
-    unique_groups = {}
-    
-    def register_cohort(samples: list, category: str, detail: str):
-        if len(samples) > 1:
-            cohort = frozenset(samples)
-            if cohort not in unique_groups:
-                unique_groups[cohort] = {'amr': [], 'inc': [], 'identity': []}
-            unique_groups[cohort][category].append(detail)
-
-    for amr_gene, samples in amr_groups.items(): register_cohort(samples, 'amr', amr_gene)
-    for inc_gene, samples in inc_groups.items(): register_cohort(samples, 'inc', inc_gene)
-    for sentinel, samples in l_strict.items(): register_cohort(samples, 'identity', f"Local Strict (Sentinel: {sentinel})")
-    for sentinel, samples in l_contain.items(): register_cohort(samples, 'identity', f"Local Contained (Sentinel: {sentinel})")
-    for sentinel, samples in g_strict.items(): register_cohort(samples, 'identity', f"Global Strict (Sentinel: {sentinel})")
-    for sentinel, samples in g_contain.items(): register_cohort(samples, 'identity', f"Global Contained (Sentinel: {sentinel})")
-    
-    logging.info("=" * 60)
-    logging.info("ROUNDABOUT PIPELINE GROUPING SUMMARY")
-    logging.info("=" * 60)
-    logging.info(f"Consolidated into {len(unique_groups)} distinct sequence cohorts.")
-    logging.info("=" * 60)
+    exit(0)
     
     # -------------------------------------------------------------------------
     # STEP 5: Process the Cohorts
@@ -243,52 +461,8 @@ def run_pipeline(args):
     # TODO: run pygenomeviz on bakta out of inputs to create visualizations without references
     # TODO: create nucmer comparisions of each cohort with and without references to generate visualizations
     # TODO: pass nucmer output to heatcluster for visualization
+    # TODO: create a heatmap of the ANI matrix for each cohort with and without references to generate visualizations
 
     bakta_dir = Path(args.outdir) / "bakta_results"
-
-    for idx, (samples_set, traits) in enumerate(unique_groups.items(), start=1):
-        group_name = f"group_{idx}"
-        samples_list = list(samples_set)
-        
-        # Calculate pairwise similarities for this specific cohort using the skani matrix
-        pairwise_anis = []
-        for a, b in itertools.combinations(samples_list, 2):
-            ani = sim_matrix.get(a, {}).get(b, {}).get('ani')
-            if ani is None:
-                ani = sim_matrix.get(b, {}).get(a, {}).get('ani')
-            pairwise_anis.append(ani if ani is not None else 0.0)
-
-        if pairwise_anis:
-            min_sim = f"{min(pairwise_anis):.2f}%"
-            max_sim = f"{max(pairwise_anis):.2f}%"
-            avg_sim = f"{statistics.mean(pairwise_anis):.2f}%"
-        else:
-            min_sim = max_sim = avg_sim = "N/A"
-            
-        group_outdir = Path(args.outdir) / group_name
-        group_outdir.mkdir(parents=True, exist_ok=True)
-        
-        # Determine ALL shared unfiltered traits for this cohort
-        all_shared_amrs = [gene for gene, members in unfiltered_amr.items() if set(samples_list).issubset(set(members))]
-        all_shared_incs = [inc for inc, members in unfiltered_inc.items() if set(samples_list).issubset(set(members))]
-        
-        # The info.txt now states exactly WHY this specific group was formed, plus ALL shared traits
-        info_file = group_outdir / "info.txt"
-        with open(info_file, 'w') as f:
-            f.write(f"Group Name: {group_name}\n")
-            f.write(f"Input Sequences ({len(samples_list)}): {', '.join(samples_list)}\n")
-            f.write(f"Grouped By Shared AMR Trigger: {', '.join(traits['amr']) if traits['amr'] else 'N/A'}\n")
-            f.write(f"Grouped By Shared Plasmid Trigger: {', '.join(traits['inc']) if traits['inc'] else 'N/A'}\n")
-            f.write(f"Grouped By Identity Trigger: {', '.join(traits['identity']) if traits['identity'] else 'N/A'}\n")
-            f.write("-" * 40 + "\n")
-            f.write(f"ALL Shared AMR Genes (Unfiltered): {', '.join(all_shared_amrs) if all_shared_amrs else 'None'}\n")
-            f.write(f"ALL Shared Plasmid Replicons (Unfiltered): {', '.join(all_shared_incs) if all_shared_incs else 'None'}\n")
-            f.write("-" * 40 + "\n")
-            f.write(f"Min Similarity: {min_sim}\n")
-            f.write(f"Max Similarity: {max_sim}\n")
-            f.write(f"Average Similarity: {avg_sim}\n")
-            
-        # Execute downstream analysis (Passing sim_matrix and threads!)
-        analyze_cohort_group(group_name, samples_list, staging_dir, group_outdir, sim_matrix, args)
 
     logging.info("Roundabout pipeline execution finished successfully!")
