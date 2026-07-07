@@ -15,6 +15,7 @@ def visualize_as_heatmap(matrix_df: pd.DataFrame, out_path: Path):
     """
     Visualizes the square skani matrix using hierarchical clustering.
     Sorts similar plasmids together, hides dendrogram lines, and neatly places the legend.
+    Falls back to unclustered heatmap layout if variance errors occur.
     """
     num_seqs = len(matrix_df)
     if num_seqs == 0:
@@ -26,22 +27,38 @@ def visualize_as_heatmap(matrix_df: pd.DataFrame, out_path: Path):
     fig_width = max(8, num_seqs * 0.4)
     fig_height = max(8, num_seqs * 0.4)
     
-    # Use clustermap to automatically sort similar sequences into distinct blocks
-    cg = sns.clustermap(
-        matrix_df, 
-        cmap='viridis', 
-        annot=show_annot, 
-        figsize=(fig_width, fig_height),
-        cbar_kws={'label': 'ANI (%)'},
-        linewidths=0.5 if num_seqs <= 30 else 0,
-        vmin=80, vmax=100,
-        # 1. Shrink the invisible margin where the dendrograms live
-        dendrogram_ratio=(0.01, 0.01), 
-        # 2. Move the colorbar legend to the right side (x, y, width, height)
-        cbar_pos=(1.02, 0.15, 0.03, 0.7) 
-    )
+    # --- FIXED: Try clustering first, drop clustering parameters if zero-variance / NaN errors trip ---
+    try:
+        cg = sns.clustermap(
+            matrix_df, 
+            cmap='viridis', 
+            annot=show_annot, 
+            figsize=(fig_width, fig_height),
+            cbar_kws={'label': 'ANI (%)'},
+            linewidths=0.5 if num_seqs <= 30 else 0,
+            vmin=80, vmax=100,
+            dendrogram_ratio=(0.01, 0.01), 
+            cbar_pos=(1.02, 0.15, 0.03, 0.7) 
+        )
+    except (FloatingPointError, ValueError) as e:
+        logging.warning(f"Clustering failed for cohort map ({e}). Plotting unclustered symmetric grid fallback.")
+        # Re-run clustermap but disable the fastcluster linkage algorithm entirely
+        cg = sns.clustermap(
+            matrix_df, 
+            cmap='viridis', 
+            annot=show_annot, 
+            figsize=(fig_width, fig_height),
+            cbar_kws={'label': 'ANI (%)'},
+            linewidths=0.5 if num_seqs <= 30 else 0,
+            vmin=80, vmax=100,
+            dendrogram_ratio=(0.01, 0.01), 
+            cbar_pos=(1.02, 0.15, 0.03, 0.7),
+            row_cluster=False,  # <-- Disables row dendrogram math
+            col_cluster=False   # <-- Disables column dendrogram math
+        )
+    # --------------------------------------------------------------------------------------------------
     
-    # 3. Hide the dendrogram tree lines (keeps the sorting, drops the ugly visuals)
+    # Hide the dendrogram tree lines (keeps the sorting, drops the ugly visuals)
     cg.ax_row_dendrogram.set_visible(False)
     cg.ax_col_dendrogram.set_visible(False)
     

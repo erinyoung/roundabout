@@ -8,13 +8,15 @@ from .run_annotation import (
     execute_plasmidfinder_parallel,
     execute_bakta_parallel
 )
-from .run_grouping import (
-    define_groups_by_similarity,
-    define_groups_by_amr,
-    define_groups_by_plasmidfinder,
-    build_consensus_groups,
-    write_group_summary
+from .run_grouping_by_similarity import define_groups_by_similarity
+from .run_grouping_by_amr import define_groups_by_amr
+from .run_grouping_by_pf import define_groups_by_plasmidfinder
+from .run_grouping_summary import run_grouping_summary
+from .run_extract_references import (
+    get_top_refseq_ids_for_sample,
+    extract_refseq_fastas
 )
+
 from .run_similarity import (
     execute_skani, 
     parse_skani_results,
@@ -26,6 +28,21 @@ from .run_visualize_similarity import (
     visualize_global_matches_scatter
 )
 
+from .run_minkemap import run_minkemap_cohorts
+from .run_daisyblast import run_daisyblast_cohorts
+from .run_cohort_heatmaps import run_cohort_heatmaps
+from roundabout.run_pygenomeviz import (
+    run_pygenomeviz_blast, 
+    run_pygenomeviz_mummer, 
+    run_pygenomeviz_pmauve,
+    run_pygenomeviz_mmseqs
+)
+from .run_pygenomeviz_gbk import (
+    run_pygenomeviz_gbk_blast, 
+    run_pygenomeviz_gbk_mummer, 
+    run_pygenomeviz_gbk_pmauve,
+    run_pygenomeviz_gbk_mmseqs
+)
 
 def stage_and_split_fastas(input_dir: Path, staging_dir: Path, min_length: int = 0, max_length: int = None) -> list[dict]:
     """
@@ -301,7 +318,6 @@ def run_pipeline(args):
     # AMRFinderPlus Execution
     # -------------------------------------------------------------------------
     # amr_dict = {}
-    # TODO filter genes OUT HERE so the full list still makes it to the final report, but only the filtered ones are used for grouping
     # if db_dict.get("amrfinder"):
     #     amr_dict = execute_amrfinder_parallel(
     #         staged_fasta_paths, 
@@ -329,7 +345,6 @@ def run_pipeline(args):
     # PlasmidFinder Execution
     # -------------------------------------------------------------------------
     pf_dict = {}
-    # TODO filter plasmid identifiers OUT HERE so the full list still makes it to the final report, but only the filtered ones are used for grouping
     # if db_dict.get("plasmidfinder"):
     #     pf_dict = execute_plasmidfinder_parallel(
     #         staged_fasta_paths, 
@@ -354,6 +369,8 @@ def run_pipeline(args):
 
     # TODO: Insertion sequences
     # TODO: Prophages
+
+    sample_ids = sorted(list(set(amr_dict.keys()) | set(pf_dict.keys())))
 
     # -------------------------------------------------------------------------
     # Bakta Execution
@@ -432,53 +449,293 @@ def run_pipeline(args):
     # -------------------------------------------------------------------------
     # Group Assignment & Reporting
     # -------------------------------------------------------------------------
-    seq_to_similarity_group, unique_similarity_groups = define_groups_by_similarity(
-        local_matrix_df, 
-        global_hits_df, 
-        min_ani,
-        min_ani_fraction_query,
-        min_ani_fraction_ref,
-        num_references
-    )
+    # similarity_groups = define_groups_by_similarity(
+    #     local_matrix_df=local_matrix_df, 
+    #     min_ani=min_ani,
+    #       min_ani_align_fraction_ref=min_ani_fraction_ref,
+    #       min_ani_align_fraction_query=min_ani_fraction_query,
+    #     outdir=outdir
+    # )
     
-    seq_to_amr_group, unique_amr_groups = define_groups_by_amr(amr_dict, target_gene=args.amr_gene)
+    # amr_groups = define_groups_by_amr(
+    #     amr_dict, 
+    #     target_gene=args.amr_gene,
+    #     outdir=outdir
+    # )
 
-    seq_to_plasmidfinder_group, unique_plasmidfinder_groups = define_groups_by_plasmidfinder(
-        pf_dict=pf_dict, 
-        target_replicon=args.plasmidfinder_string
-    )
+    # plasmidfinder_groups = define_groups_by_plasmidfinder(
+    #     pf_dict=pf_dict, 
+    #     target_replicon=args.plasmidfinder_string,
+    #     outdir=outdir
+    # )
 
-    seq_to_consensus, unique_consensus_groups = build_consensus_groups(
-        seq_to_sim=seq_to_similarity_group,
-        seq_to_amr=seq_to_amr_group,
-        seq_to_pf=seq_to_plasmidfinder_group
-    )
+    # -------------------------------------------------------------------------
+    # Combine and Deduplicate Groups
+    # -------------------------------------------------------------------------
+    # Combine all your generated groups into one massive list
+    # all_groups = amr_groups + plasmidfinder_groups + similarity_groups
 
-    # Generate and save the sheet using the outdir path
-    group_report_csv = write_group_summary(
-        master_groups=unique_consensus_groups,
-        unique_similarity_groups=unique_similarity_groups,
-        amr_dict=amr_dict,
-        pf_dict=pf_dict,
-        local_matrix_df=local_matrix_df,
-        global_hits_df=global_hits_df,
-        outdir=Path(args.outdir), # or however your outdir is defined
-        target_amr_gene=args.amr_gene,
-        target_pf_replicon=args.plasmidfinder_string
-    )
-
-    exit(0)
+    # # Deduplicate by converting to sorted tuples, then back to lists
+    # unique_groups_set = {tuple(sorted(g)) for g in all_groups}
     
+    # # Sort them by size (largest groups first) just to keep the output tidy
+    # unique_groups = [list(g) for g in unique_groups_set]
+    # unique_groups.sort(key=lambda g: (len(g), g), reverse=True)
+
+    # -------------------------------------------------------------------------
+    # Run Grouping Summary
+    # -------------------------------------------------------------------------
+    # pipeline_groups = run_grouping_summary(
+    #     groups=unique_groups,
+    #     staged_data=staged_fasta_data,
+    #     amr_dict=amr_dict,
+    #     plasmidfinder_dict=pf_dict,
+    #     skani_df=local_matrix_df,
+    #     outdir=outdir,
+    #     min_num_seqs=args.min_num_seqs,
+    #     target_amr_gene=args.amr_gene,                 # Passes "ndm" or None
+    #     target_pf_string=args.plasmidfinder_string     # Passes string or None
+    # )
+
+    # print(pipeline_groups)
+    pipeline_groups = {'group_0001': ['4051899_2', '4051900_4', '4051901_2', '4051902_2', '4051903_2', '4051904_2', '4051905_2', '4051906_2', '4051907_2', '4051908_2'], 'group_0002': ['4051901_2', '4051902_2', '4051903_2', '4051904_2', '4051905_2', '4051908_2'], 'group_0003': ['4051900_3', '4051904_3', '4051905_3', '4051906_3'], 'group_0004': ['4051899_2', '4051900_4', '4051906_2', '4051907_2']}
+   
     # -------------------------------------------------------------------------
     # STEP 5: Process the Cohorts
     # -------------------------------------------------------------------------
+    logging.info("Starting cohort comparative visualizations...")
 
-    # TODO: run minkemap on each cohort to generate a visual representation of the groupings with and without references
-    # TODO: run daisyblast on each cohort to generate visualizations without references
-    # TODO: run pygenomeviz on bakta out of inputs to create visualizations without references
+    fasta_map = {item["combined_id"]: item["path"] for item in staged_fasta_data}
+    amr_outdir = Path(args.outdir) / "amrfinder_results"
+
+    # Default if no RefSeq database is available
+    sample_to_ref_paths = {}
+
+    # Identify the RefSeq database path if available
+    if db_dict.get("refseq_plasmid_dl"):
+        refseq_db_dir = Path(db_dict["refseq_plasmid_dl"])
+        refseq_fasta = refseq_db_dir / "refseq_plasmids_dl.fasta"
+
+        sample_to_refs = {}
+        all_needed_refs = set()
+
+        # 1. Collect all required RefSeq IDs across ALL samples first
+        for sample_id in sample_ids:
+            refs = get_top_refseq_ids_for_sample(
+                global_hits_df,
+                sample_id,
+                num_refs=num_references,
+                min_ani=min_ani,
+                min_af_query=min_ani_fraction_query,
+                min_af_ref=min_ani_fraction_ref
+            )
+            sample_to_refs[sample_id] = refs
+            all_needed_refs.update(refs)
+
+        # 2. Extract everything from the massive multi-FASTA in ONE single pass
+        staged_ref_paths = extract_refseq_fastas(
+            all_needed_refs,
+            refseq_fasta,
+            outdir
+        )
+
+        # Helper to mirror the filename cleaning logic used during extraction
+        def clean_id(val):
+            return Path(str(val)).stem.split(".")[0].strip()
+
+        # 3. Map each sample back to its specific staged RefSeq FASTA paths
+        for sample_id, refs in sample_to_refs.items():
+            sample_to_ref_paths[sample_id] = []
+            for ref in refs:
+                cleaned_ref = clean_id(ref)
+                if cleaned_ref in staged_ref_paths:
+                    sample_to_ref_paths[sample_id].append(staged_ref_paths[cleaned_ref])
+
+    # Now pass the cleanly populated sample_to_ref_paths to your downstream tools
+    # run_minkemap_cohorts(
+    #     pipeline_groups=pipeline_groups,
+    #     fasta_map=fasta_map,
+    #     amr_outdir=amr_outdir,
+    #     outdir=outdir,
+    #     minkemap_opts=minkemap_opts,
+    #     sample_to_ref_paths=sample_to_ref_paths,
+    #     target_amr_gene=args.amr_gene
+    # )
+    
+    # run_daisyblast_cohorts(
+    #     pipeline_groups=pipeline_groups,
+    #     fasta_map=fasta_map, # Reuses the same dictionary mapping we built for MinkeMap
+    #     outdir=outdir,
+    #     args=args
+    # )
+
+# # ---------------------------------------------------------
+#     # PyGenomeViz Synteny (BLAST)
+#     # ---------------------------------------------------------
+# TODO : run pygenomeviz BLAST, MUMmer, progressiveMauve, and MMseqs visualizations for each cohort with the genbank files from bakta
+# TODO : replace with color schemes from the original roundabout
+#     if not pgv_opts["skip_blast"]:
+#         logging.info("Starting cohort structural synteny visualizations (BLAST)...")
+        
+#         synteny_outdir = Path(outdir) / "synteny_results"
+#         synteny_outdir.mkdir(parents=True, exist_ok=True)
+        
+#         for group_id, members in pipeline_groups.items():
+#             # Grab the FASTA paths directly from your existing fasta_map
+#             cohort_fastas = [fasta_map[m] for m in members if m in fasta_map]
+                    
+#             if len(cohort_fastas) >= 2:
+#                 logging.info(f"Generating BLAST synteny plot for {group_id}...")
+#                 plot_out_path = synteny_outdir / f"{group_id}_blast_synteny.png"
+                
+#                 run_pygenomeviz_blast(
+#                     fasta_paths=cohort_fastas,
+#                     local_matrix_df=local_matrix_df,
+#                     out_path=plot_out_path,
+#                     min_length=pgv_opts["min_length"],     
+#                     min_identity=pgv_opts["min_identity"]  
+#                 )
+#             else:
+#                 logging.warning(f"Not enough valid FASTA files found for {group_id} synteny plotting.")
+                
+#         logging.info("BLAST synteny visualizations complete.")
+#     else:
+#         logging.info("Skipping PyGenomeViz BLAST visualizations (--pgv-skip-blast).")
+# # ---------------------------------------------------------
+#     # PyGenomeViz Synteny (MUMmer)
+#     # ---------------------------------------------------------
+#     if not pgv_opts["skip_mummer"]:
+#         logging.info("Starting cohort structural synteny visualizations (MUMmer)...")
+        
+#         synteny_outdir = Path(outdir) / "synteny_results"
+#         synteny_outdir.mkdir(parents=True, exist_ok=True)
+        
+#         for group_id, members in pipeline_groups.items():
+#             # Grab the FASTA paths directly from your existing fasta_map
+#             cohort_fastas = [fasta_map[m] for m in members if m in fasta_map]
+                    
+#             if len(cohort_fastas) >= 2:
+#                 logging.info(f"Generating MUMmer synteny plot for {group_id}...")
+#                 plot_out_path = synteny_outdir / f"{group_id}_mummer_synteny.png"
+                
+#                 run_pygenomeviz_mummer(
+#                     fasta_paths=cohort_fastas,
+#                     local_matrix_df=local_matrix_df,
+#                     out_path=plot_out_path,
+#                     min_length=pgv_opts["min_length"],     
+#                     min_identity=pgv_opts["min_identity"]  
+#                 )
+#             else:
+#                 logging.warning(f"Not enough valid FASTA files found for {group_id} MUMmer plotting.")
+                
+#         logging.info("MUMmer synteny visualizations complete.")
+#     else:
+#         logging.info("Skipping PyGenomeViz MUMmer visualizations (--pgv-skip-mummer).")
+
+    # ---------------------------------------------------------
+    # PyGenomeViz Synteny (progressiveMauve)
+    # ---------------------------------------------------------
+    # if not pgv_opts["skip_pmauve"]:
+    #     logging.info("Starting cohort structural synteny visualizations (progressiveMauve)...")
+        
+    #     synteny_outdir = Path(outdir) / "synteny_results"
+    #     synteny_outdir.mkdir(parents=True, exist_ok=True)
+        
+    #     for group_id, members in pipeline_groups.items():
+    #         # Grab the FASTA paths directly from your existing fasta_map
+    #         cohort_fastas = [fasta_map[m] for m in members if m in fasta_map]
+                    
+    #         if len(cohort_fastas) >= 2:
+    #             logging.info(f"Generating progressiveMauve synteny plot for {group_id}...")
+    #             plot_out_path = synteny_outdir / f"{group_id}_pmauve_synteny.png"
+                
+    #             run_pygenomeviz_pmauve(
+    #                 fasta_paths=cohort_fastas,
+    #                 local_matrix_df=local_matrix_df,
+    #                 out_path=plot_out_path,
+    #                 min_length=pgv_opts["min_length"],     
+    #                 min_identity=pgv_opts["min_identity"]  
+    #             )
+    #         else:
+    #             logging.warning(f"Not enough valid FASTA files found for {group_id} progressiveMauve plotting.")
+                
+    #     logging.info("progressiveMauve synteny visualizations complete.")
+    # else:
+    #     logging.info("Skipping PyGenomeViz progressiveMauve visualizations (--pgv-skip-pmauve).")
+
+# ---------------------------------------------------------
+    # PyGenomeViz GenBank Pipelines (CDS Features Included)
+    # ---------------------------------------------------------
+    logging.info("Starting cohort annotated GenBank visualizations...")
+    
+    # Resolve the exact directory structure from your ls output
+    bakta_dir = Path(outdir) / "bakta_results"
+    
+    gbk_map = {}
+    if bakta_dir.exists():
+        # Look inside each sample's subdirectory for its corresponding .gbff file
+        for p in bakta_dir.rglob("*.gbff"):
+            # Maps the exact filename stem (e.g., '4051899_2') to its full Path
+            gbk_map[p.stem] = p
+            # Also maps an extra fallback in case your pipeline groups list them without extensions
+            gbk_map[p.stem.split('.')[0]] = p
+
+    # Build an isolated output directory specifically for the GenBank plots
+    gbk_synteny_outdir = Path(outdir) / "synteny_results_gbk"
+    gbk_synteny_outdir.mkdir(parents=True, exist_ok=True)
+
+    # Iterate through your pipeline cohorts
+    for group_id, members in pipeline_groups.items():
+        # Keep only the members that successfully generated a .gbff file
+        cohort_gbks = [gbk_map[m] for m in members if m in gbk_map and gbk_map[m].exists()]
+        
+        if len(cohort_gbks) >= 2:
+            logging.info(f"Generating annotated synteny plots for {group_id} ({len(cohort_gbks)} sequences)...")
+            
+            # --- 1. BLAST (Protein) ---
+            # --- 1. BLAST (Protein) ---
+            if not pgv_opts["skip_blast"]:
+                run_pygenomeviz_gbk_blast(
+                    gbk_paths=cohort_gbks, local_matrix_df=local_matrix_df,
+                    out_path=gbk_synteny_outdir / f"{group_id}_gbk_blast_synteny.png",
+                    min_length=pgv_opts["min_length"], min_identity=pgv_opts["min_identity"]
+                )
+
+            # --- 2. MUMmer ---
+            if not pgv_opts["skip_mummer"]:
+                run_pygenomeviz_gbk_mummer(
+                    gbk_paths=cohort_gbks, local_matrix_df=local_matrix_df,
+                    out_path=gbk_synteny_outdir / f"{group_id}_gbk_mummer_synteny.png",
+                    min_length=pgv_opts["min_length"], min_identity=pgv_opts["min_identity"]
+                )
+
+            # --- 3. progressiveMauve ---
+            if not pgv_opts["skip_pmauve"]:
+                run_pygenomeviz_gbk_pmauve(
+                    gbk_paths=cohort_gbks, local_matrix_df=local_matrix_df,
+                    out_path=gbk_synteny_outdir / f"{group_id}_gbk_pmauve_synteny.png",
+                    min_length=pgv_opts["min_length"], min_identity=pgv_opts["min_identity"]
+                )
+
+            # --- 4. MMseqs2 ---
+            if not pgv_opts["skip_mmseqs"]:
+                run_pygenomeviz_gbk_mmseqs(
+                    gbk_paths=cohort_gbks, local_matrix_df=local_matrix_df,
+                    out_path=gbk_synteny_outdir / f"{group_id}_gbk_mmseqs_synteny.png",
+                    min_length=pgv_opts["min_length"], min_identity=pgv_opts["min_identity"]
+                )
+
+    logging.info("GenBank comparative genomic visualizations complete.")
     # TODO: create nucmer comparisions of each cohort with and without references to generate visualizations
-    # TODO: pass nucmer output to heatcluster for visualization
-    # TODO: create a heatmap of the ANI matrix for each cohort with and without references to generate visualizations
+    # TODO: get heatmap of nucmer visualization
+    
+    # run_cohort_heatmaps(
+    #     pipeline_groups=pipeline_groups,
+    #     local_matrix_df=local_matrix_df,  # Added back!
+    #     global_hits_df=global_hits_df,    
+    #     outdir=outdir,
+    #     sample_to_ref_paths=sample_to_ref_paths
+    # )
 
     bakta_dir = Path(args.outdir) / "bakta_results"
 

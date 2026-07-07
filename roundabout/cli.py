@@ -154,6 +154,7 @@ def main(args=None):
     cli_parser.add_argument('-t', '--threads', type=int, default=4, help="Number of concurrent threads to use")
     cli_parser.add_argument('-v', '--version', action='version', version=f'%(prog)s {__version__}', help="Show the application version and exit")
     cli_parser.add_argument('-c', '--check', action='store_true', help="Show the application dependencies and exit")
+    cli_parser.add_argument('--min-num-seqs', type=int, default=2, help="Minimum number of input sequences in group for downstream processing")
     cli_parser.add_argument('--min-contig-length', type=int, default=0, help="Minimum sequence length to keep during staging")
     cli_parser.add_argument('--max-contig-length', type=int, default=1000000, help="Maximum sequence length to keep during staging (default: 1000000)")
 
