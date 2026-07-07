@@ -85,6 +85,10 @@ def visualize_global_matches_scatter(global_df: pd.DataFrame, out_path: Path):
     # 1. Collapse the long list into Top 10 + Other
     if 'organism' in global_df.columns:
         global_df['organism'] = global_df['organism'].fillna('Unknown')
+
+        global_df['organism'] = global_df['organism'].apply(
+            lambda x: ' '.join(str(x).split()[:2]) if x != 'Unknown' else x
+        )
         
         # Determine the top 10 most frequent species across the whole dataset
         top_10_organisms = global_df['organism'].value_counts().nlargest(10).index.tolist()

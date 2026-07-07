@@ -162,8 +162,8 @@ def main(args=None):
     # ---------------------------------------------------------
     grouping_parser = cli_parser.add_argument_group("Grouping Options")
     grouping_parser.add_argument('--min-ani', type=float, default=95.0, help="Minimum ANI for ANI-based grouping (default: 95.0)")
-    grouping_parser.add_argument('--min-ani-align-fraction-ref', type=float, default=95.0, help="Minimum aligned fraction for ANI-based grouping (default: 95.0)")
-    grouping_parser.add_argument('--min-ani-align-fraction-query', type=float, default=95.0, help="Minimum aligned fraction for ANI-based grouping (default: 95.0)")
+    grouping_parser.add_argument('--min-ani-align-fraction-ref', type=float, default=15.0, help="Minimum aligned fraction for ANI-based grouping (default: 15.0)")
+    grouping_parser.add_argument('--min-ani-align-fraction-query', type=float, default=15.0, help="Minimum aligned fraction for ANI-based grouping (default: 15.0)")
     grouping_parser.add_argument('--num-ref', type=int, default=5, help="Number of reference sequences to use for identity-based grouping (default: 5)")
 
     # ---------------------------------------------------------

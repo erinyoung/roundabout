@@ -8,11 +8,11 @@ from .run_annotation import (
     execute_plasmidfinder_parallel,
     execute_bakta_parallel
 )
-# TODO : define groups by AMR
 from .run_grouping import (
     define_groups_by_similarity,
-    #define_groups_by_amr,
-    #define_groups_by_plasmid,
+    define_groups_by_amr,
+    define_groups_by_plasmidfinder,
+    build_consensus_groups,
     write_group_summary
 )
 from .run_similarity import (
@@ -94,9 +94,9 @@ def run_pipeline(args):
     threads = args.threads
     outdir = Path(args.outdir)
     min_ani = args.min_ani
-    min_ani_fraction_query = args.min_ani_fraction_query
-    min_ani_fraction_ref = args.min_ani_fraction_ref
-    num_references = args.num_references
+    min_ani_fraction_query = args.min_ani_align_fraction_query
+    min_ani_fraction_ref = args.min_ani_align_fraction_ref
+    num_references = args.num_ref
     min_contig_length = args.min_contig_length
     max_contig_length = args.max_contig_length
 
@@ -322,7 +322,8 @@ def run_pipeline(args):
     
     # print(amr_dict)  # <-- Debugging line to inspect the AMRFinderPlus results
     # line below can be used for debugging to skip the amrfinder step
-    amr_dict = {'4051900_4': ['blaNDM-5'], '4051900_3': [], '4051901_2': ['blaNDM-98'], '4051899_2': ['blaNDM-5'], '4051902_2': ['blaNDM-98'], '4051904_3': [], '4051903_2': ['blaNDM-98'], '4051904_2': ['blaNDM-98'], '4051905_2': ['blaNDM-98'], '4051905_3': [], '4051906_3': [], '4051906_2': ['blaNDM-5'], '4051907_2': ['blaNDM-5'], '4051908_2': ['blaNDM-98']}
+    amr_dict = {'4051900_4': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-5', 'mph(A)', 'mrx(A)'], '4051900_3': [], '4051899_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-5', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051901_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051902_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051903_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051904_3': [], '4051904_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051905_3': [], '4051905_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051906_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-5', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051906_3': [], '4051907_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-5', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT'], '4051908_2': ['dfrA12', 'aadA2', 'qacEdelta1', 'sul1', 'ble', 'blaNDM-98', 'mph(A)', 'mrx(A)', 'tet(A)', 'traT']}
+
 
     # -------------------------------------------------------------------------
     # PlasmidFinder Execution
@@ -431,7 +432,7 @@ def run_pipeline(args):
     # -------------------------------------------------------------------------
     # Group Assignment & Reporting
     # -------------------------------------------------------------------------
-    seq_to_group, unique_similarity_groups = define_groups_by_similarity(
+    seq_to_similarity_group, unique_similarity_groups = define_groups_by_similarity(
         local_matrix_df, 
         global_hits_df, 
         min_ani,
@@ -440,14 +441,30 @@ def run_pipeline(args):
         num_references
     )
     
-    # TODO : Implement define_groups_by_amr and define_groups_by_plasmid for additional grouping strategies
+    seq_to_amr_group, unique_amr_groups = define_groups_by_amr(amr_dict, target_gene=args.amr_gene)
+
+    seq_to_plasmidfinder_group, unique_plasmidfinder_groups = define_groups_by_plasmidfinder(
+        pf_dict=pf_dict, 
+        target_replicon=args.plasmidfinder_string
+    )
+
+    seq_to_consensus, unique_consensus_groups = build_consensus_groups(
+        seq_to_sim=seq_to_similarity_group,
+        seq_to_amr=seq_to_amr_group,
+        seq_to_pf=seq_to_plasmidfinder_group
+    )
 
     # Generate and save the sheet using the outdir path
     group_report_csv = write_group_summary(
-        unique_similarity_groups, 
-        local_matrix_df, 
-        global_hits_df, 
-        outdir
+        master_groups=unique_consensus_groups,
+        unique_similarity_groups=unique_similarity_groups,
+        amr_dict=amr_dict,
+        pf_dict=pf_dict,
+        local_matrix_df=local_matrix_df,
+        global_hits_df=global_hits_df,
+        outdir=Path(args.outdir), # or however your outdir is defined
+        target_amr_gene=args.amr_gene,
+        target_pf_replicon=args.plasmidfinder_string
     )
 
     exit(0)
