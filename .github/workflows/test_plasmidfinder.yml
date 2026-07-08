@@ -1,10 +1,7 @@
 name: Test PlasmidFinder Integration
 
 on:
-  push:
-    branches: [ "main", "nextflow_to_python" ]
-  pull_request:
-    branches: [ "main", "nextflow_to_python" ]
+  pull_request
 
 jobs:
   test-plasmidfinder:
