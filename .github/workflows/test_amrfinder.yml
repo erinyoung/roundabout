@@ -1,0 +1,60 @@
+name: Test AMRFinder Integration
+
+on:
+  push:
+    branches: [ "main", "nextflow_to_python" ]
+  pull_request:
+    branches: [ "main", "nextflow_to_python" ]
+
+jobs:
+  test-amrfinder:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash -el {0} 
+
+    steps:
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: true
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        environment-file: environment.yml
+        activate-environment: roundabout-env
+        # Strict channel priority prevents dependency clashes between conda-forge and bioconda
+        channel-priority: strict 
+
+    - name: Download AMRFinderPlus Database
+      run: |
+        # Manually update AMRFinder so roundabout doesn't try to download Bakta/RefSeq
+        amrfinder -u
+
+    - name: Test Roundabout CLI (AMRFinder Focus)
+      run: |
+        # Run roundabout using your existing test/ directory
+        roundabout -f test -o test_results \
+          --skip-db \
+          --amr-gene "bla" \
+          --amr-ident-min 0.85 \
+          --amr-coverage-min 0.5 \
+          --amr-organism "Escherichia"
+          
+    - name: Verify AMRFinder Execution Output
+      run: |
+        # Ensure the staging and AMRFinder output directories were actually created
+        test -d test_results/staging_fastas
+        test -d test_results/amrfinder_results

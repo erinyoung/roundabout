@@ -1,0 +1,67 @@
+name: Test RefSeq Integration
+
+on:
+  push:
+    branches: [ "main", "nextflow_to_python" ]
+  pull_request:
+    branches: [ "main", "nextflow_to_python" ]
+
+jobs:
+  test-refseq:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash -el {0} 
+
+    steps:
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: true
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        environment-file: environment.yml
+        activate-environment: roundabout-env
+        channel-priority: strict 
+
+    - name: Build Miniature RefSeq Database
+      run: |
+        # We constrain the download to just tiny Salmonella plasmids so the test finishes in seconds.
+        # This creates the necessary .fasta and .csv files roundabout expects.
+        refseq-plasmid-dl \
+          --outdir test_refseq_db \
+          --organism "Salmonella" \
+          --max-length 5000 \
+          --topology circular
+
+    - name: Test Roundabout CLI (RefSeq Focus)
+      run: |
+        # Run roundabout using your test FASTAs
+        # We pass several filter flags to test your CLI argument routing
+        roundabout -f test -o test_results \
+          --skip-db \
+          --refseq-plasmid-dl-db test_refseq_db \
+          --refseq-organism "Salmonella" \
+          --refseq-max-length 5000 \
+          --refseq-topology circular
+          
+    - name: Verify RefSeq Execution Output
+      run: |
+        # Ensure the staging directory was created
+        test -d test_results/staging_fastas
+        
+        # Verify the Skani matrix generation (which relies on the RefSeq DB if provided)
+        test -d test_results/skani_results

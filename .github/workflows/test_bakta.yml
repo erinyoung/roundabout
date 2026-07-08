@@ -1,0 +1,65 @@
+name: Test Bakta Light Integration
+
+on:
+  push:
+    branches: [ "main", "nextflow_to_python" ]
+  pull_request:
+    branches: [ "main", "nextflow_to_python" ]
+
+jobs:
+  test-bakta:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash -el {0} 
+
+    steps:
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: true
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        environment-file: environment.yml
+        activate-environment: roundabout-env
+        channel-priority: strict 
+
+    - name: Download Bakta Light Database
+      run: |
+        # Download the Bakta light database (~1.5GB) into a specific folder
+        # We use the native tool to bypass roundabout's global setup
+        bakta_db download --type light --db test_bakta_db
+
+    - name: Test Roundabout CLI (Bakta Focus)
+      run: |
+        # Run roundabout using your test FASTAs and pass Bakta-specific metadata
+        roundabout -f test -o test_results \
+          --skip-db \
+          --bakta-db test_bakta_db \
+          --bakta-genus "Escherichia" \
+          --bakta-species "coli" \
+          --bakta-locus "testloc" \
+          --bakta-keep-contig-headers
+          
+    - name: Verify Bakta Execution Output
+      run: |
+        # Ensure the staging and Bakta output directories were created
+        test -d test_results/staging_fastas
+        test -d test_results/bakta_results
+        
+        # Ensure at least one output subdirectory was created by Bakta
+        # (Assuming 'test' folder contains at least one valid FASTA)
+        ls -la test_results/bakta_results/

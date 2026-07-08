@@ -1,0 +1,39 @@
+name: Publish to PyPI
+
+# This workflow only triggers when you publish a new Release on GitHub
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    
+    # CRITICAL: These permissions are required for PyPI Trusted Publishing (OIDC)
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build
+
+    - name: Build the distribution packages
+      run: |
+        # This creates the .tar.gz and .whl files in the dist/ folder
+        python -m build
+
+    - name: Publish package to PyPI
+      # Uses the official PyPA action to securely upload the contents of dist/
+      uses: pypa/gh-action-pypi-publish@release/v1
