@@ -7,48 +7,51 @@ from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
 
 from pygenomeviz import GenomeViz
+from pygenomeviz.parser import Genbank
 from pygenomeviz.align import Blast, MUMmer, ProgressiveMauve, MMseqs, AlignCoord
+
 
 def get_fasta_lengths(fasta_path: Path) -> dict[str, int]:
     """
-    Parses a FASTA file and returns a dictionary.
-    FIXED: Overrides the internal fasta header ID with the filename stem
-    to prevent SegmentNotFoundErrors across multi-aligners.
+    Parses a FASTA file and returns a dictionary of {sequence_id: length}.
+    This ensures segment names match the IDs that BLAST uses.
     """
+    seq_lengths = {}
+    seq_id = None
     length = 0
-    with open(fasta_path, 'r') as f:
-        for line in f:
-            if not line.startswith(">"):
-                length += len(line.strip())
-                
-    # Use the filename stem as the segment name, making it completely bulletproof
-    return {fasta_path.stem: length}
 
-def sort_fastas_by_ani(fasta_paths: list[Path], local_matrix_df: pd.DataFrame) -> list[Path]:
+    with open(fasta_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                # Save the previous sequence if it exists
+                if seq_id is not None:
+                    seq_lengths[seq_id] = length
+                # Extract the BLAST-compatible sequence ID (first word after '>')
+                seq_id = line[1:].split()[0]
+                length = 0
+            else:
+                length += len(line)
+
+    # Add the final sequence
+    if seq_id is not None:
+        seq_lengths[seq_id] = length
+
+    return seq_lengths
+
+
+def get_input_order(members: list[str], local_matrix_df: pd.DataFrame) -> list[Path]:
     """
-    Sorts a list of FASTA paths mathematically using hierarchical clustering 
+    Sorts a list of FASTA paths mathematically using hierarchical clustering
     derived from the local ANI matrix. Highly similar sequences will be adjacent.
     """
-    if len(fasta_paths) < 3:
-        return fasta_paths
-
-    def clean_id(val):
-        return Path(str(val)).stem.split('.')[0].strip()
-
-    valid_paths = []
-    valid_ids = []
-    
-    for path in fasta_paths:
-        cid = clean_id(path)
-        if cid in local_matrix_df.index:
-            valid_paths.append(path)
-            valid_ids.append(cid)
-
-    if len(valid_paths) < 3:
-        return fasta_paths
+    if len(members) < 3:
+        return members
 
     # Extract sub-matrix and convert similarity to distance
-    sub_matrix = local_matrix_df.loc[valid_ids, valid_ids].copy().fillna(80.0)
+    sub_matrix = local_matrix_df.loc[members, members].copy().fillna(80.0)
     distance_matrix = 100.0 - sub_matrix.values
 
     # Force strict symmetry for SciPy
@@ -57,275 +60,626 @@ def sort_fastas_by_ani(fasta_paths: list[Path], local_matrix_df: pd.DataFrame) -
 
     # Perform clustering and extract optimal order
     condensed_dist = squareform(distance_matrix)
-    Z = linkage(condensed_dist, method='average') 
+    Z = linkage(condensed_dist, method="average")
     leaf_order = leaves_list(Z)
 
-    return [valid_paths[i] for i in leaf_order]
+    return [members[i] for i in leaf_order]
 
-def run_pygenomeviz_blast(
-    fasta_paths: list[Path], 
-    local_matrix_df: pd.DataFrame,
-    out_path: Path, 
-    min_length: int = 500, 
-    min_identity: float = 80.0
+
+def initial_gv_canvas(pgv_opts: dict) -> GenomeViz:
+    """
+    Initializes the pyGenomeViz canvas using the shared layout options.
+    """
+    gv = GenomeViz(
+        fig_width=pgv_opts.get("fig_width", 15.0),
+        fig_track_height=pgv_opts.get("fig_track_height", 1.0),
+        feature_track_ratio=pgv_opts.get("feature_track_ratio", 0.25),
+        track_align_type=pgv_opts.get("track_align_type", "center"),
+    )
+
+    return gv
+
+
+def render_links_and_save(
+    gv: GenomeViz, align_coords: list, out_path: Path, pgv_opts: dict, method: str
 ):
     """
-    Takes a list of FASTA paths, extracts their lengths to build tracks,
-    runs nucleotide BLAST, and plots the synteny links.
+    Generalized renderer. Applies different link styles and colorbars based
+    on the alignment method (e.g., identity vs blocks).
     """
-    if len(fasta_paths) < 2:
-        logging.warning("Need at least 2 FASTA files to run BLAST synteny. Skipping.")
+    if not align_coords:
+        logging.warning(f"No alignment links passed filtering thresholds for {method}.")
+        gv.savefig(out_path, dpi=pgv_opts.get("dpi", 300))
         return
 
-    # --- ADDED: Sort the sequences using the ANI matrix before plotting ---
-    sorted_fastas = sort_fastas_by_ani(fasta_paths, local_matrix_df)
-    # ----------------------------------------------------------------------
+    # 1. Grab link styles
+    color = pgv_opts.get("normal_link_color", "grey")
+    inverted_color = pgv_opts.get("inverted_link_color", "red")
+    curve = pgv_opts.get("curve", False)
 
-    logging.info(f"Running pygenomeviz BLAST on {len(sorted_fastas)} sequences...")
+    # 2. Check alignment data types
+    # 2. Check alignment data types
+    has_identity = any(getattr(ac, "identity", None) is not None for ac in align_coords)
 
-    # 1. Initialize GenomeViz Canvas
-    gv = GenomeViz(track_align_type="center")
-    gv.set_scale_bar()
+    # Safely check for any block identifier (handles different pygenomeviz versions)
+    def get_block_id(ac):
+        return (
+            getattr(ac, "group", None)
+            or getattr(ac, "lcb_id", None)
+            or getattr(ac, "group_id", None)
+        )
 
-    # 2. Build Tracks from FASTA lengths in the newly sorted order
-    for fasta in sorted_fastas:
-        seq_lengths = get_fasta_lengths(fasta)
-        # Use the filename stem as the track label
-        gv.add_feature_track(fasta.stem, seq_lengths)
+    has_group = any(get_block_id(ac) is not None for ac in align_coords)
 
-    # 3. Run Nucleotide BLAST directly on the sorted FASTAs
+    # Route A: Identity Gradient (BLAST, MUMmer)
+    if has_identity and method != "pmauve":
+        vmin = float(pgv_opts.get("identity_thr", 30.0))
+        for ac in align_coords:
+            gv.add_link(
+                ac.query_link,
+                ac.ref_link,
+                color=color,
+                inverted_color=inverted_color,
+                v=ac.identity,
+                vmin=vmin,
+                vmax=100,
+                curve=curve,
+            )
+        gv.set_colorbar(
+            [color, inverted_color],
+            vmin=vmin,
+            vmax=100,
+            bar_width=pgv_opts.get("cbar_width", 0.01),
+            bar_height=pgv_opts.get("cbar_height", 0.2),
+        )
+
+    # Route B: Block Clustering (progressiveMauve)
+    # Route B: Block Clustering (progressiveMauve)
+    elif has_group or method == "pmauve":
+        block_cmap = pgv_opts.get("block_cmap", "gist_rainbow")
+
+        # 1. Collect block group IDs (natively 'group' in pygenomeviz for Mauve)
+        group_ids = [
+            ac.group for ac in align_coords if getattr(ac, "group", None) is not None
+        ]
+
+        # Failsafe: if the parser stripped them, fall back to a uniform single group
+        vmin_group = min(group_ids) if group_ids else 1
+        vmax_group = max(group_ids) if group_ids else 1
+
+        for ac in align_coords:
+            group_val = getattr(ac, "group", None) or 1
+
+            # 2. Let pygenomeviz natively map the group ID to both the track blocks
+            # AND the linking ribbons using the internal colormap logic.
+            gv.add_link(
+                ac.query_link,
+                ac.ref_link,
+                v=group_val,
+                vmin=vmin_group,
+                vmax=vmax_group,
+                cmap=block_cmap,
+                curve=curve,
+            )
+
+    # Route C: Fallback (Solid colors, no identity gradient)
+    else:
+        for ac in align_coords:
+            gv.add_link(
+                ac.query_link,
+                ac.ref_link,
+                color=color,
+                inverted_color=inverted_color,
+                curve=curve,
+            )
+
+    # 3. Handle global canvas elements
+    scale_size = pgv_opts.get("scale_labelsize", 15.0)
+    if pgv_opts.get("show_scale_bar", False):
+        gv.set_scale_bar(labelsize=scale_size)
+    elif pgv_opts.get("show_scale_xticks", False):
+        gv.set_scale_xticks(labelsize=scale_size)
+
+    # 4. Save
+    gv.savefig(out_path, dpi=pgv_opts.get("dpi", 300))
+
+
+def run_pygenomeviz_blast(
+    input_paths: list[Path],
+    out_path: Path,
+    file_type: str = "fasta",
+    pgv_opts: dict = None,
+):
+    """
+    Builds tracks from sequences, runs BLAST, and plots synteny.
+    Automatically handles nucleotide BLAST for FASTAs and protein BLAST for GBFFs.
+    """
+    if pgv_opts is None:
+        pgv_opts = {}
+
+    logging.info(
+        f"Running pygenomeviz BLAST on {len(input_paths)} {file_type} sequences..."
+    )
+    gv = initial_gv_canvas(pgv_opts)
+
+    track_labelsize = pgv_opts.get("track_labelsize", 20.0)
+
+    # Parse Feature Colors
+    feature_colors = {}
+    for item in pgv_opts.get("feature_type2color", ["CDS:black"]):
+        if ":" in item:
+            ftype, fcolor = item.split(":", 1)
+            feature_colors[ftype] = fcolor
+
+    label_type = pgv_opts.get("feature_labeltype", "None")
+    label_type = None if label_type == "None" else label_type
+
+    # Initialize lists to hold the specific inputs BLAST needs for each type
+    blast_inputs = []
+    blast_seqtype = "nucleotide"
+
+    # 1. Build Tracks & Collect BLAST Inputs
+    if file_type == "fasta":
+        blast_seqtype = "nucleotide"
+
+        for fasta in input_paths:
+            seq_lengths_dict = get_fasta_lengths(fasta)
+            gv.add_feature_track(
+                fasta.stem, seq_lengths_dict, labelsize=track_labelsize
+            )
+            # FASTAs just need string paths passed to BLAST
+            blast_inputs.append(str(fasta))
+
+    elif file_type == "gbff":
+        blast_seqtype = "protein"  # Switch to protein alignment
+
+        for gbk_path in input_paths:
+            gbk = Genbank(gbk_path)
+            # GenBank files should have the parsed objects passed to BLAST
+            blast_inputs.append(gbk)
+
+            track = gv.add_feature_track(
+                gbk.name, gbk.get_seqid2size(), labelsize=track_labelsize
+            )
+
+            for ftype, fcolor in feature_colors.items():
+                for seqid, features in gbk.get_seqid2features(ftype).items():
+                    segment = track.get_segment(seqid)
+                    segment.add_features(
+                        features,
+                        plotstyle=pgv_opts.get("feature_plotstyle", "arrow"),
+                        fc=fcolor,
+                        lw=pgv_opts.get("feature_linewidth", 0.0),
+                        label_type=label_type,
+                        text_kws={"size": pgv_opts.get("feature_labelsize", 8.0)},
+                    )
+
+    # 2. Run Alignment
     try:
-        align_coords = Blast(
-            [str(p) for p in sorted_fastas], 
-            seqtype="nucleotide"
-        ).run()
+        align_coords = Blast(blast_inputs, seqtype=blast_seqtype).run()
     except Exception as e:
         logging.error(f"pygenomeviz BLAST failed: {e}")
         return
 
-    # Filter out tiny or low-quality hits to keep the plot clean
+    # 3. Filter and Render
     align_coords = AlignCoord.filter(
-        align_coords, 
-        length_thr=min_length, 
-        identity_thr=min_identity
+        align_coords,
+        length_thr=pgv_opts.get("length_thr", 100),
+        identity_thr=pgv_opts.get("identity_thr", 30.0),
     )
 
-    # 4. Draw the Alignment Links
-    if align_coords:
-        # Dynamically set the colorbar floor based on the worst passing hit
-        min_ident = int(min([ac.identity for ac in align_coords if ac.identity]))
-        color, inverted_color = "grey", "red"
-        
-        for ac in align_coords:
-            gv.add_link(
-                ac.query_link, 
-                ac.ref_link, 
-                color=color, 
-                inverted_color=inverted_color, 
-                v=ac.identity, 
-                vmin=min_ident
-            )
-            
-        gv.set_colorbar([color, inverted_color], vmin=min_ident)
-    else:
-        logging.warning("No BLAST alignments passed the thresholds for these FASTAs.")
+    render_links_and_save(gv, align_coords, out_path, pgv_opts, method="blast")
 
-    # 5. Save out the figure
-    gv.savefig(out_path, dpi=300)
 
 def run_pygenomeviz_mummer(
-    fasta_paths: list[Path], 
-    local_matrix_df: pd.DataFrame, 
-    out_path: Path, 
-    min_length: int = 500, 
-    min_identity: float = 80.0
+    input_paths: list[Path],
+    out_path: Path,
+    file_type: str = "fasta",
+    pgv_opts: dict = None,
 ):
     """
-    Takes a list of FASTA paths, extracts their lengths to build tracks,
-    runs MUMmer (nucmer), and plots the synteny links.
+    Builds tracks from sequences, runs MUMmer, and plots synteny.
+    Automatically handles nucleotide MUMmer (nucmer) for FASTAs
+    and protein MUMmer (promer) for GBFFs.
     """
-    if len(fasta_paths) < 2:
-        logging.warning("Need at least 2 FASTA files to run MUMmer synteny. Skipping.")
-        return
+    if pgv_opts is None:
+        pgv_opts = {}
 
-    # Sort the sequences using the ANI matrix before plotting
-    sorted_fastas = sort_fastas_by_ani(fasta_paths, local_matrix_df)
+    logging.info(
+        f"Running pygenomeviz MUMmer on {len(input_paths)} {file_type} sequences..."
+    )
+    gv = initial_gv_canvas(pgv_opts)
 
-    logging.info(f"Running pygenomeviz MUMmer on {len(sorted_fastas)} sequences...")
+    track_labelsize = pgv_opts.get("track_labelsize", 20.0)
 
-    # Initialize GenomeViz Canvas
-    gv = GenomeViz(track_align_type="center")
-    gv.set_scale_bar()
+    # Parse Feature Colors
+    feature_colors = {}
+    for item in pgv_opts.get("feature_type2color", ["CDS:black"]):
+        if ":" in item:
+            ftype, fcolor = item.split(":", 1)
+            feature_colors[ftype] = fcolor
 
-    # Build Tracks from FASTA lengths in the sorted order
-    for fasta in sorted_fastas:
-        seq_lengths = get_fasta_lengths(fasta)
-        gv.add_feature_track(fasta.stem, seq_lengths)
+    label_type = pgv_opts.get("feature_labeltype", "None")
+    label_type = None if label_type == "None" else label_type
 
-    # Run Nucleotide MUMmer (nucmer) directly on the sorted FASTAs
+    # Initialize lists to hold the specific inputs MUMmer needs
+    mummer_inputs = []
+    mummer_seqtype = "nucleotide"
+
+    # 1. Build Tracks & Collect MUMmer Inputs
+    if file_type == "fasta":
+        mummer_seqtype = "nucleotide"
+
+        for fasta in input_paths:
+            seq_lengths_dict = get_fasta_lengths(fasta)
+            gv.add_feature_track(
+                fasta.stem, seq_lengths_dict, labelsize=track_labelsize
+            )
+            mummer_inputs.append(str(fasta))
+
+    elif file_type == "gbff":
+        mummer_seqtype = "protein"
+
+        for gbk_path in input_paths:
+            gbk = Genbank(gbk_path)
+            mummer_inputs.append(gbk)
+
+            track = gv.add_feature_track(
+                gbk.name, gbk.get_seqid2size(), labelsize=track_labelsize
+            )
+
+            for ftype, fcolor in feature_colors.items():
+                for seqid, features in gbk.get_seqid2features(ftype).items():
+                    segment = track.get_segment(seqid)
+                    segment.add_features(
+                        features,
+                        plotstyle=pgv_opts.get("feature_plotstyle", "arrow"),
+                        fc=fcolor,
+                        lw=pgv_opts.get("feature_linewidth", 0.0),
+                        label_type=label_type,
+                        text_kws={"size": pgv_opts.get("feature_labelsize", 8.0)},
+                    )
+
+    # 2. Run MUMmer Alignment
     try:
-        align_coords = MUMmer(
-            [str(p) for p in sorted_fastas], 
-            seqtype="nucleotide"
-        ).run()
+        # This acts exactly like the Blast class!
+        align_coords = MUMmer(mummer_inputs, seqtype=mummer_seqtype).run()
     except Exception as e:
         logging.error(f"pygenomeviz MUMmer failed: {e}")
         return
 
-    # Filter out tiny or low-quality hits
+    # 3. Filter Coordinates
     align_coords = AlignCoord.filter(
-        align_coords, 
-        length_thr=min_length, 
-        identity_thr=min_identity
+        align_coords,
+        length_thr=pgv_opts.get("length_thr", 100),
+        identity_thr=pgv_opts.get("identity_thr", 30.0),
     )
+    logging.info(f"MUMmer produced {len(align_coords)} links")
 
-    # Draw the Alignment Links
-    if align_coords:
-        min_ident = int(min([ac.identity for ac in align_coords if ac.identity]))
-        color, inverted_color = "grey", "red"
-        
-        for ac in align_coords:
-            gv.add_link(
-                ac.query_link, 
-                ac.ref_link, 
-                color=color, 
-                inverted_color=inverted_color, 
-                v=ac.identity, 
-                vmin=min_ident
-            )
-            
-        gv.set_colorbar([color, inverted_color], vmin=min_ident)
-    else:
-        logging.warning("No MUMmer alignments passed the thresholds for these FASTAs.")
-
-    # Save out the figure
-    gv.savefig(out_path, dpi=300)
+    # 4. Render (Using the exact same generalized renderer we built!)
+    render_links_and_save(gv, align_coords, out_path, pgv_opts, method="mummer")
 
 
 def run_pygenomeviz_pmauve(
-    fasta_paths: list[Path], 
-    local_matrix_df: pd.DataFrame, 
-    out_path: Path, 
-    min_length: int = 500, 
-    min_identity: float = 80.0
+    input_paths: list[Path],
+    out_path: Path,
+    file_type: str = "fasta",
+    pgv_opts: dict = None,
 ):
     """
-    Takes a list of FASTA paths, extracts their lengths to build tracks,
-    runs progressiveMauve, and plots the synteny links.
+    Builds tracks from sequences, runs progressiveMauve, and plots matching
+    rainbow synteny blocks and links, fixing the native ColorCycler bug.
     """
-    if len(fasta_paths) < 2:
-        logging.warning("Need at least 2 FASTA files to run progressiveMauve synteny. Skipping.")
+    if pgv_opts is None:
+        pgv_opts = {}
+
+    if len(input_paths) < 2:
+        logging.warning("Need at least 2 files to run progressiveMauve. Skipping.")
         return
 
-    # Sort the sequences using the ANI matrix before plotting
-    sorted_fastas = sort_fastas_by_ani(fasta_paths, local_matrix_df)
+    logging.info(
+        f"Running pygenomeviz progressiveMauve on {len(input_paths)} {file_type} sequences..."
+    )
 
-    logging.info(f"Running pygenomeviz progressiveMauve on {len(sorted_fastas)} sequences...")
+    # 1. Initialize Canvas
+    gv = initial_gv_canvas(pgv_opts)
+    track_labelsize = pgv_opts.get("track_labelsize", 20.0)
+    block_plotstyle = pgv_opts.get("block_plotstyle", "box")
+    block_cmap = pgv_opts.get("block_cmap", "gist_rainbow")
 
-    # Initialize GenomeViz Canvas
-    gv = GenomeViz(track_align_type="center")
-    gv.set_scale_bar()
+    # Override link colors to match the block color if requested
+    normal_link_color = pgv_opts.get("normal_link_color", "#323e4f")
+    inverted_link_color = pgv_opts.get("inverted_link_color", "#3d6e70")
 
-    # Build Tracks from FASTA lengths in the sorted order
-    for fasta in sorted_fastas:
-        seq_lengths = get_fasta_lengths(fasta)
-        # Using the clean structural positional binding
-        gv.add_feature_track(fasta.stem, seq_lengths)
+    pmauve_inputs = []
+    name2seqlen = {}
 
-    # Run progressiveMauve directly on the sorted FASTAs
+    # 2. Build Flattened Tracks & Collect Inputs
+    if file_type == "fasta":
+        for fasta in input_paths:
+            seq_lengths_dict = get_fasta_lengths(fasta)
+            total_length = sum(seq_lengths_dict.values())
+            name2seqlen[fasta.stem] = total_length
+            pmauve_inputs.append(str(fasta))
+
+    elif file_type == "gbff":
+        for gbk_path in input_paths:
+            gbk = Genbank(gbk_path)
+            total_length = sum(gbk.get_seqid2size().values())
+            name2seqlen[gbk.name] = total_length
+            pmauve_inputs.append(gbk)
+
+    # 3. Run progressiveMauve Alignment
     try:
         align_coords = ProgressiveMauve(
-            [str(p) for p in sorted_fastas]
+            pmauve_inputs, refid=pgv_opts.get("refid", 0)
         ).run()
     except Exception as e:
         logging.error(f"pygenomeviz progressiveMauve failed: {e}")
         return
 
-    # Filter out tiny hits
+    # Filter out tiny blocks based on length threshold
     align_coords = AlignCoord.filter(
-        align_coords, 
-        length_thr=min_length
+        align_coords, length_thr=pgv_opts.get("length_thr", 500)
     )
 
-    # Draw the Alignment Links
-    if align_coords:
-        color, inverted_color = "grey", "red"
-        
-        for ac in align_coords:
-            gv.add_link(
-                ac.query_link, 
-                ac.ref_link, 
-                color=color, 
-                inverted_color=inverted_color
-            )
-    else:
-        logging.warning("No progressiveMauve alignments passed the length threshold.")
-
-    # Save out the figure
-    gv.savefig(out_path, dpi=300)
-def run_pygenomeviz_mmseqs(
-    fasta_paths: list[Path], 
-    local_matrix_df: pd.DataFrame, 
-    out_path: Path, 
-    min_length: int = 500, 
-    min_identity: float = 80.0
-):
-    """
-    Takes a list of FASTA paths, extracts their lengths to build tracks,
-    runs MMseqs (translated protein alignment), and plots the synteny links.
-    """
-    if len(fasta_paths) < 2:
-        logging.warning("Need at least 2 FASTA files to run MMseqs synteny. Skipping.")
+    if not align_coords:
+        logging.warning("No progressiveMauve alignments passed the thresholds.")
+        gv.savefig(out_path, dpi=pgv_opts.get("dpi", 300))
         return
 
-    # Sort the sequences using the ANI matrix before plotting
-    sorted_fastas = sort_fastas_by_ani(fasta_paths, local_matrix_df)
+    # 4. Parse Synteny Blocks exactly like the official CLI script
+    from collections import defaultdict
 
-    logging.info(f"Running pygenomeviz MMseqs on {len(sorted_fastas)} sequences...")
+    name2blocks = defaultdict(list)
+    for ac in align_coords:
+        if ac.query_block not in name2blocks[ac.query_name]:
+            name2blocks[ac.query_name].append(ac.query_block)
+        if ac.ref_block not in name2blocks[ac.ref_name]:
+            name2blocks[ac.ref_name].append(ac.ref_block)
 
-    # Initialize GenomeViz Canvas
-    gv = GenomeViz(track_align_type="center")
-    gv.set_scale_bar()
+    # 5. Build Global Coordinates-to-Color Map
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
 
-    # Build Tracks from FASTA lengths in the sorted order
-    for fasta in sorted_fastas:
-        seq_lengths = get_fasta_lengths(fasta)
-        gv.add_feature_track(fasta.stem, seq_lengths)
+    # Gather all unique blocks across the entire genome to establish color groups
+    all_unique_blocks = set()
+    for blocks in name2blocks.values():
+        for b in blocks:
+            all_unique_blocks.add((b[0], b[1]))  # Group by start and end positions
 
-    # Run MMseqs directly on the sorted FASTAs (seqtype="protein" runs 6-frame translation)
+    sorted_unique_blocks = sorted(list(all_unique_blocks))
+    num_unique_blocks = len(sorted_unique_blocks)
+
+    # Map each physical block boundary to a consistent rainbow color
+    cmap = cm.get_cmap(block_cmap)
+    block2color = {}
+    for idx, b_coords in enumerate(sorted_unique_blocks):
+        norm_val = idx / (num_unique_blocks - 1) if num_unique_blocks > 1 else 0.0
+        block2color[b_coords] = mcolors.to_hex(cmap(norm_val))
+
+    # 6. Add Tracks and Features using the Unified Color Map
+    for name, seqlen in name2seqlen.items():
+        track = gv.add_feature_track(
+            name=name,
+            segments={name: seqlen},
+            labelsize=track_labelsize,
+        )
+        for block in name2blocks[name]:
+            # Fetch the color tied strictly to the coordinates of this block
+            hex_color = block2color[(block[0], block[1])]
+            track.add_feature(*block, plotstyle=block_plotstyle, fc=hex_color)
+
+    # 7. Plot Connecting Links
+    for ac in align_coords:
+        # BONUS: Dynamically color links to match the block color they connect!
+        hex_color = block2color.get(
+            (ac.query_block[0], ac.query_block[1]), normal_link_color
+        )
+
+        gv.add_link(
+            ac.query_link,
+            ac.ref_link,
+            curve=pgv_opts.get("curve", False),
+            color=hex_color,
+            inverted_color=hex_color,
+        )
+
+    # 8. Global Canvas Configurations & Save
+    scale_size = pgv_opts.get("scale_labelsize", 15.0)
+    if pgv_opts.get("show_scale_bar", False):
+        gv.set_scale_bar(labelsize=scale_size)
+    elif pgv_opts.get("show_scale_xticks", False):
+        gv.set_scale_xticks(labelsize=scale_size)
+
+    gv.savefig(out_path, dpi=pgv_opts.get("dpi", 300))
+
+
+def run_pygenomeviz_mmseqs(
+    input_paths: list[Path],
+    out_path: Path,
+    file_type: str = "gbff",
+    pgv_opts: dict = None,
+):
+    """
+    Builds tracks from GenBank sequences, runs MMseqs (translated protein alignment),
+    and plots the synteny links with an identity colorbar. Only supports GBFF files.
+    """
+    if pgv_opts is None:
+        pgv_opts = {}
+
+    # Strict guard rail: Only allow execution on GBFF files
+    if file_type != "gbff":
+        logging.warning(
+            f"MMseqs workflow in this pipeline is configured strictly for 'gbff' files. "
+            f"Skipping execution for file_type='{file_type}'."
+        )
+        return
+
+    if len(input_paths) < 2:
+        logging.warning("Need at least 2 GBFF files to run MMseqs synteny. Skipping.")
+        return
+
+    logging.info(f"Running pygenomeviz MMseqs on {len(input_paths)} sequences...")
+
+    # 1. Initialize Canvas
+    gv = initial_gv_canvas(pgv_opts)
+    track_labelsize = pgv_opts.get("track_labelsize", 20.0)
+
+    # Parse Feature Colors
+    feature_colors = {}
+    for item in pgv_opts.get("feature_type2color", ["CDS:black"]):
+        if ":" in item:
+            ftype, fcolor = item.split(":", 1)
+            feature_colors[ftype] = fcolor
+
+    label_type = pgv_opts.get("feature_labeltype", "None")
+    label_type = None if label_type == "None" else label_type
+
+    mmseqs_inputs = []
+
+    # 2. Build Tracks from Contig Sizes & Add GenBank Features
+    for gbk_path in input_paths:
+        gbk = Genbank(gbk_path)
+        mmseqs_inputs.append(gbk)
+
+        # MMseqs is contig-aware, so we pass the full parsed {seqid: size} dictionary
+        track = gv.add_feature_track(
+            gbk.name, gbk.get_seqid2size(), labelsize=track_labelsize
+        )
+
+        # Populate track features (CDS, tRNA, etc.)
+        for ftype, fcolor in feature_colors.items():
+            for seqid, features in gbk.get_seqid2features(ftype).items():
+                segment = track.get_segment(seqid)
+                segment.add_features(
+                    features,
+                    plotstyle=pgv_opts.get("feature_plotstyle", "arrow"),
+                    fc=fcolor,
+                    lw=pgv_opts.get("feature_linewidth", 0.0),
+                    label_type=label_type,
+                    text_kws={"size": pgv_opts.get("feature_labelsize", 8.0)},
+                )
+
+    # 3. Run MMseqs Alignment
     try:
-        align_coords = MMseqs(
-            [str(p) for p in sorted_fastas]
-        ).run()
+        # MMseqs wrapper handles 6-frame translated alignments natively for Genbank objects
+        align_coords = MMseqs(mmseqs_inputs).run()
     except Exception as e:
         logging.error(f"pygenomeviz MMseqs failed: {e}")
         return
 
-    # Filter out tiny or low-quality hits
+    # 4. Filter Coordinates based on identity and length thresholds
     align_coords = AlignCoord.filter(
-        align_coords, 
-        length_thr=min_length, 
-        identity_thr=min_identity
+        align_coords,
+        length_thr=pgv_opts.get("length_thr", 100),
+        identity_thr=pgv_opts.get("identity_thr", 30.0),
     )
+    logging.info(f"MMseqs produced {len(align_coords)} links")
 
-    # Draw the Alignment Links
-    if align_coords:
-        min_ident = int(min([ac.identity for ac in align_coords if ac.identity]))
-        color, inverted_color = "grey", "red"
-        
-        for ac in align_coords:
-            gv.add_link(
-                ac.query_link, 
-                ac.ref_link, 
-                color=color, 
-                inverted_color=inverted_color, 
-                v=ac.identity, 
-                vmin=min_ident
+    # 5. Render using our shared identity-gradient renderer (Route A)
+    render_links_and_save(gv, align_coords, out_path, pgv_opts, method="mmseqs")
+
+
+def run_pygenomeviz(
+    pipeline_groups: dict[str, list[str]],
+    fasta_map: dict[str, Path],
+    gbff_map: dict[str, Path],
+    local_matrix_df: pd.DataFrame,
+    outdir: Path,
+    method: str = "blast",
+    pgv_opts: dict = None,
+):
+    """
+    Main function to run pygenomeviz synteny visualizations based on the specified method.
+    """
+
+    for group_id, members in pipeline_groups.items():
+        logging.info(f"Running pyGenomeViz for {group_id} ({len(members)} members)")
+
+        group_out_dir = Path(outdir) / group_id / "pygenomeviz_results" / method
+        group_out_dir.mkdir(parents=True, exist_ok=True)
+
+        sorted_members = get_input_order(members, local_matrix_df)
+        # members = ['4051899_2', '4051901_2', '4051902_2', '4051903_2', '4051904_2', '4051905_2', '4051906_2', '4051907_2', '4051908_2']
+        # sorted_members = ['4051906_2', '4051904_2', '4051901_2', '4051903_2', '4051908_2', '4051907_2', '4051905_2', '4051899_2', '4051902_2']
+
+        # 2. Map group member IDs to their physical staged FASTA paths
+        fasta_paths = [fasta_map[m_id] for m_id in sorted_members if m_id in fasta_map]
+        # group_fasta_paths = [PosixPath('results/staging_fastas/4051908_2.fasta'), PosixPath('results/staging_fastas/4051905_2.fasta'), PosixPath('results/staging_fastas/4051904_2.fasta'), PosixPath('results/staging_fastas/4051903_2.fasta'), PosixPath('results/staging_fastas/4051901_2.fasta'), PosixPath('results/staging_fastas/4051902_2.fasta')]
+
+        if not fasta_paths:
+            logging.warning(
+                f"No valid FASTA paths found for group {group_id}, skipping."
             )
-            
-        gv.set_colorbar([color, inverted_color], vmin=min_ident)
-    else:
-        logging.warning("No MMseqs alignments passed the thresholds for these FASTAs.")
+            continue
 
-    # Save out the figure
-    gv.savefig(out_path, dpi=300)
+        if len(fasta_paths) < 2:
+            logging.warning("Need at least 2 FASTA files to run synteny. Skipping.")
+            continue
+
+        gbff_paths = [gbff_map[m_id] for m_id in sorted_members if m_id in gbff_map]
+        # gbff_paths = [PosixPath('results/bakta_results/4051908_2/4051908_2.gbff'), PosixPath('results/bakta_results/4051905_2/4051905_2.gbff'), PosixPath('results/bakta_results/4051904_2/4051904_2.gbff'), PosixPath('results/bakta_results/4051903_2/4051903_2.gbff'), PosixPath('results/bakta_results/4051901_2/4051901_2.gbff'), PosixPath('results/bakta_results/4051902_2/4051902_2.gbff')]
+
+        if not gbff_paths:
+            logging.warning(
+                f"No valid FASTA paths found for group {group_id}, skipping."
+            )
+            continue
+
+        if len(gbff_paths) < 2:
+            logging.warning("Need at least 2 FASTA files to run synteny. Skipping.")
+            continue
+
+        # Call the appropriate method
+        if method == "blast":
+            if len(fasta_paths) >= 2:
+                run_pygenomeviz_blast(
+                    fasta_paths,
+                    group_out_dir
+                    / f"pygenomeviz_synteny_{group_id}_{method}_fasta.png",
+                    "fasta",
+                    pgv_opts,
+                )
+            if len(gbff_paths) >= 2:
+                run_pygenomeviz_blast(
+                    gbff_paths,
+                    group_out_dir / f"pygenomeviz_synteny_{group_id}_{method}_gbff.png",
+                    "gbff",
+                    pgv_opts,
+                )
+        elif method == "mummer":
+            if len(fasta_paths) >= 2:
+                run_pygenomeviz_mummer(
+                    fasta_paths,
+                    group_out_dir
+                    / f"pygenomeviz_synteny_{group_id}_{method}_fasta.png",
+                    "fasta",
+                    pgv_opts,
+                )
+            if len(gbff_paths) >= 2:
+                run_pygenomeviz_mummer(
+                    gbff_paths,
+                    group_out_dir / f"pygenomeviz_synteny_{group_id}_{method}_gbff.png",
+                    "gbff",
+                    pgv_opts,
+                )
+        elif method == "pmauve":
+            if len(fasta_paths) >= 2:
+                run_pygenomeviz_pmauve(
+                    fasta_paths,
+                    group_out_dir
+                    / f"pygenomeviz_synteny_{group_id}_{method}_fasta.png",
+                    "fasta",
+                    pgv_opts,
+                )
+        elif method == "mmseqs":
+            if len(gbff_paths) >= 2:
+                run_pygenomeviz_mmseqs(
+                    gbff_paths,
+                    group_out_dir / f"pygenomeviz_synteny_{group_id}_{method}_gbff.png",
+                    "gbff",
+                    pgv_opts,
+                )
+        else:
+            logging.error(f"Unknown pygenomeviz method: {method}")

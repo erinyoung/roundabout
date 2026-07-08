@@ -29,10 +29,7 @@ def define_groups_by_plasmidfinder(
     for seq, replicons in pf_dict.items():
 
         if target_replicon:
-            profile = tuple(sorted(
-                r for r in replicons
-                if search in r.lower()
-            ))
+            profile = tuple(sorted(r for r in replicons if search in r.lower()))
         else:
             profile = tuple(sorted(replicons))
 
@@ -50,12 +47,12 @@ def define_groups_by_plasmidfinder(
     # Build detailed metadata for the JSON output
     # ---------------------------------------------------------
     json_payload = []
-    
+
     for i, group_seqs in enumerate(groups, start=1):
-        
+
         # Pull original full replicon profiles for every sequence in this group
         group_replicon_sets = [set(pf_dict.get(seq, [])) for seq in group_seqs]
-        
+
         if group_replicon_sets:
             shared_replicons = sorted(set.intersection(*group_replicon_sets))
             all_replicons = sorted(set.union(*group_replicon_sets))
@@ -66,20 +63,21 @@ def define_groups_by_plasmidfinder(
         # Re-derive the filtered profile that caused this group to form
         first_seq = group_seqs[0]
         if target_replicon:
-            filtered_profile = sorted([
-                r for r in pf_dict.get(first_seq, []) 
-                if search in r.lower()
-            ])
+            filtered_profile = sorted(
+                [r for r in pf_dict.get(first_seq, []) if search in r.lower()]
+            )
         else:
             filtered_profile = None
 
-        json_payload.append({
-            "group_id": f"plasmidfinder_group_{i:04d}",
-            "sequences": group_seqs,
-            "filtered_replicon_profile": filtered_profile,
-            "shared_replicons": shared_replicons,
-            "all_replicons": all_replicons
-        })
+        json_payload.append(
+            {
+                "group_id": f"plasmidfinder_group_{i:04d}",
+                "sequences": group_seqs,
+                "filtered_replicon_profile": filtered_profile,
+                "shared_replicons": shared_replicons,
+                "all_replicons": all_replicons,
+            }
+        )
 
     # Ensure the subdirectory exists
     outfile = outdir / "plasmidfinder_results" / "plasmidfinder_groups.json"

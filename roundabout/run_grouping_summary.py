@@ -5,8 +5,8 @@ from itertools import combinations
 
 import pandas as pd
 
-
 logging.basicConfig(level=logging.INFO)
+
 
 def calculate_jaccard(set_a: set, set_b: set) -> float:
     """
@@ -25,6 +25,7 @@ def calculate_jaccard(set_a: set, set_b: set) -> float:
         return 0.0
 
     return len(set_a & set_b) / len(union)
+
 
 def get_group_jaccard_statistics(
     seq_ids: list[str],
@@ -50,6 +51,7 @@ def get_group_jaccard_statistics(
         )
 
     return summarize_values(values)
+
 
 def calculate_gc_content(fasta_path: Path) -> float:
     """
@@ -140,10 +142,7 @@ def shared_features(
     if not seq_ids:
         return []
 
-    profiles = [
-        set(feature_dict.get(seq, []))
-        for seq in seq_ids
-    ]
+    profiles = [set(feature_dict.get(seq, [])) for seq in seq_ids]
 
     shared = set.intersection(*profiles)
 
@@ -227,7 +226,9 @@ def run_grouping_summary(
             for seq, replicons in plasmidfinder_dict.items()
         }
 
-    logging.info(f"Summarizing {len(groups)} unique groups and {len(metadata)} samples...")
+    logging.info(
+        f"Summarizing {len(groups)} unique groups and {len(metadata)} samples..."
+    )
 
     group_summaries = []
     seq_to_groups = {}  # Dictionary to track which groups each sequence ends up in
@@ -236,7 +237,7 @@ def run_grouping_summary(
     # 1. Build Group Summaries
     # -------------------------------------------------------------------------
     for i, seq_ids in enumerate(groups, start=1):
-        
+
         group_id = f"group_{i:04d}"
 
         # Map each sequence to this group ID for the sample summary later
@@ -257,15 +258,21 @@ def run_grouping_summary(
             "shared_amr": shared_features(seq_ids, amr_dict),
             "shared_plasmidfinder": shared_features(seq_ids, plasmidfinder_dict),
             "unique_amr_count": unique_feature_count(seq_ids, amr_dict),
-            "unique_plasmidfinder_count": unique_feature_count(seq_ids, plasmidfinder_dict),
+            "unique_plasmidfinder_count": unique_feature_count(
+                seq_ids, plasmidfinder_dict
+            ),
             "amr_jaccard": get_group_jaccard_statistics(seq_ids, amr_dict),
-            "plasmidfinder_jaccard": get_group_jaccard_statistics(seq_ids, plasmidfinder_dict),
+            "plasmidfinder_jaccard": get_group_jaccard_statistics(
+                seq_ids, plasmidfinder_dict
+            ),
         }
 
         if filtered_amr_dict:
             result["shared_filtered_amr"] = shared_features(seq_ids, filtered_amr_dict)
         if filtered_plasmidfinder_dict:
-            result["shared_filtered_plasmidfinder"] = shared_features(seq_ids, filtered_plasmidfinder_dict)
+            result["shared_filtered_plasmidfinder"] = shared_features(
+                seq_ids, filtered_plasmidfinder_dict
+            )
 
         group_summaries.append(result)
 
@@ -273,26 +280,25 @@ def run_grouping_summary(
     # 2. Build Sample Summaries
     # -------------------------------------------------------------------------
     sample_summaries = []
-    
+
     # Iterate over every sequence we staged, even if it wasn't placed in a group
     for seq_id, meta in metadata.items():
-        sample_summaries.append({
-            "sequence_id": seq_id,
-            "length": meta["length"],
-            "gc_content": meta["gc"],
-            "assigned_groups": sorted(seq_to_groups.get(seq_id, [])),
-            "amr_genes": sorted(amr_dict.get(seq_id, [])),
-            "plasmidfinder_replicons": sorted(plasmidfinder_dict.get(seq_id, []))
-        })
+        sample_summaries.append(
+            {
+                "sequence_id": seq_id,
+                "length": meta["length"],
+                "gc_content": meta["gc"],
+                "assigned_groups": sorted(seq_to_groups.get(seq_id, [])),
+                "amr_genes": sorted(amr_dict.get(seq_id, [])),
+                "plasmidfinder_replicons": sorted(plasmidfinder_dict.get(seq_id, [])),
+            }
+        )
 
     # ---------------------------------------------------------
     # Output 1: Combined JSON
     # ---------------------------------------------------------
-    final_summary = {
-        "groups": group_summaries,
-        "samples": sample_summaries
-    }
-    
+    final_summary = {"groups": group_summaries, "samples": sample_summaries}
+
     json_outfile = outdir / "group_summary.json"
     with open(json_outfile, "w") as f:
         json.dump(final_summary, f, indent=2)
@@ -302,10 +308,14 @@ def run_grouping_summary(
     # Output 2: Group TSV
     # ---------------------------------------------------------
     df_group = pd.json_normalize(group_summaries)
-    list_columns_group = [col for col in df_group.columns if df_group[col].apply(type).eq(list).any()]
+    list_columns_group = [
+        col for col in df_group.columns if df_group[col].apply(type).eq(list).any()
+    ]
     for col in list_columns_group:
-        df_group[col] = df_group[col].apply(lambda x: ",".join(x) if isinstance(x, list) else x)
-        
+        df_group[col] = df_group[col].apply(
+            lambda x: ",".join(x) if isinstance(x, list) else x
+        )
+
     group_tsv = outdir / "group_summary.tsv"
     df_group.to_csv(group_tsv, sep="\t", index=False)
     logging.info(f"Wrote Group TSV to {group_tsv}")
@@ -314,10 +324,14 @@ def run_grouping_summary(
     # Output 3: Sample TSV
     # ---------------------------------------------------------
     df_sample = pd.json_normalize(sample_summaries)
-    list_columns_sample = [col for col in df_sample.columns if df_sample[col].apply(type).eq(list).any()]
+    list_columns_sample = [
+        col for col in df_sample.columns if df_sample[col].apply(type).eq(list).any()
+    ]
     for col in list_columns_sample:
-        df_sample[col] = df_sample[col].apply(lambda x: ",".join(x) if isinstance(x, list) else x)
-        
+        df_sample[col] = df_sample[col].apply(
+            lambda x: ",".join(x) if isinstance(x, list) else x
+        )
+
     sample_tsv = outdir / "sample_summary.tsv"
     df_sample.to_csv(sample_tsv, sep="\t", index=False)
     logging.info(f"Wrote Sample TSV to {sample_tsv}")
@@ -325,13 +339,12 @@ def run_grouping_summary(
     # ---------------------------------------------------------
     # Return Group Mapping
     # ---------------------------------------------------------
-    group_mapping = {
-        g["group_id"]: g["sequence_ids"] 
-        for g in group_summaries
-    }
+    group_mapping = {g["group_id"]: g["sequence_ids"] for g in group_summaries}
 
     # Create a quick summary of group sizes to keep the log clean
     mapping_summary = {group: len(seqs) for group, seqs in group_mapping.items()}
-    logging.info(f"Final group assignments (Group: Sequence Count) -> {mapping_summary}")
+    logging.info(
+        f"Final group assignments (Group: Sequence Count) -> {mapping_summary}"
+    )
 
     return group_mapping

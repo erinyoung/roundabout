@@ -29,10 +29,7 @@ def define_groups_by_amr(
     for seq, genes in amr_dict.items():
 
         if target_gene:
-            profile = tuple(sorted(
-                g for g in genes
-                if search in g.lower()
-            ))
+            profile = tuple(sorted(g for g in genes if search in g.lower()))
         else:
             profile = tuple(sorted(genes))
 
@@ -50,12 +47,12 @@ def define_groups_by_amr(
     # Build detailed metadata for the JSON output
     # ---------------------------------------------------------
     json_payload = []
-    
+
     for i, group_seqs in enumerate(groups, start=1):
-        
+
         # Pull original full gene profiles for every sequence in this group
         group_gene_sets = [set(amr_dict.get(seq, [])) for seq in group_seqs]
-        
+
         if group_gene_sets:
             shared_genes = sorted(set.intersection(*group_gene_sets))
             all_genes = sorted(set.union(*group_gene_sets))
@@ -66,20 +63,21 @@ def define_groups_by_amr(
         # Re-derive the filtered profile that caused this group to form
         first_seq = group_seqs[0]
         if target_gene:
-            filtered_profile = sorted([
-                g for g in amr_dict.get(first_seq, []) 
-                if search in g.lower()
-            ])
+            filtered_profile = sorted(
+                [g for g in amr_dict.get(first_seq, []) if search in g.lower()]
+            )
         else:
             filtered_profile = None
 
-        json_payload.append({
-            "group_id": f"amr_group_{i:04d}",
-            "sequences": group_seqs,
-            "filtered_amr_profile": filtered_profile,
-            "shared_amr_genes": shared_genes,
-            "all_amr_genes": all_genes
-        })
+        json_payload.append(
+            {
+                "group_id": f"amr_group_{i:04d}",
+                "sequences": group_seqs,
+                "filtered_amr_profile": filtered_profile,
+                "shared_amr_genes": shared_genes,
+                "all_amr_genes": all_genes,
+            }
+        )
 
     # Ensure the subdirectory exists
     outfile = outdir / "amrfinder_results" / "amr_groups.json"

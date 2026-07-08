@@ -4,6 +4,7 @@ from pathlib import Path
 from itertools import combinations
 import pandas as pd
 
+
 def define_groups_by_similarity(
     raw_skani_df: pd.DataFrame,
     local_matrix_df: pd.DataFrame,
@@ -13,7 +14,7 @@ def define_groups_by_similarity(
     outdir: Path,
 ) -> list[list[str]]:
     """
-    Groups sequences that share the same local ANI neighborhood based on 
+    Groups sequences that share the same local ANI neighborhood based on
     stringent ANI and alignment fraction thresholds.
     """
     logging.info(
@@ -26,20 +27,42 @@ def define_groups_by_similarity(
     df_clean.columns = [c.lower() for c in df_clean.columns]
 
     # Map standard Skani matrix headers dynamically
-    query_col = next((c for c in df_clean.columns if 'query' in c and ('name' in c or 'id' in c or 'file' in c)), 'query_name')
-    ref_col = next((c for c in df_clean.columns if 'ref' in c and ('name' in c or 'id' in c or 'file' in c)), 'refseq_hit')
-    ani_col = 'ani' if 'ani' in df_clean.columns else 'ani'
-    af_query_col = 'align_fraction_query'
-    af_ref_col = 'align_fraction_ref'
+    query_col = next(
+        (
+            c
+            for c in df_clean.columns
+            if "query" in c and ("name" in c or "id" in c or "file" in c)
+        ),
+        "query_name",
+    )
+    ref_col = next(
+        (
+            c
+            for c in df_clean.columns
+            if "ref" in c and ("name" in c or "id" in c or "file" in c)
+        ),
+        "refseq_hit",
+    )
+    ani_col = "ani" if "ani" in df_clean.columns else "ani"
+    af_query_col = "align_fraction_query"
+    af_ref_col = "align_fraction_ref"
 
     # 2. Build a mapping of valid structural neighbors
     # For every isolate, it must know exactly which other isolates passed ALL three filters
     valid_neighbors = {str(seq): {str(seq)} for seq in local_matrix_df.index}
 
     for _, row in df_clean.iterrows():
-        q = Path(str(row[query_col])).header_id if hasattr(row[query_col], 'header_id') else Path(str(row[query_col])).stem.split('.')[0]
-        r = Path(str(row[ref_col])).header_id if hasattr(row[ref_col], 'header_id') else Path(str(row[ref_col])).stem.split('.')[0]
-        
+        q = (
+            Path(str(row[query_col])).header_id
+            if hasattr(row[query_col], "header_id")
+            else Path(str(row[query_col])).stem.split(".")[0]
+        )
+        r = (
+            Path(str(row[ref_col])).header_id
+            if hasattr(row[ref_col], "header_id")
+            else Path(str(row[ref_col])).stem.split(".")[0]
+        )
+
         # Ensure we are looking strictly at local vs local comparisons inside the matrix index
         if q not in valid_neighbors or r not in valid_neighbors:
             continue
@@ -48,12 +71,14 @@ def define_groups_by_similarity(
             ani_val = float(row[ani_col])
             af_q_val = float(row[af_query_col]) if af_query_col in row else 100.0
             af_r_val = float(row[af_ref_col]) if af_ref_col in row else 100.0
-            
+
             # Enforce the complete boundary checklist
-            if (ani_val >= min_ani and 
-                af_q_val >= min_ani_align_fraction_query and 
-                af_r_val >= min_ani_align_fraction_ref):
-                
+            if (
+                ani_val >= min_ani
+                and af_q_val >= min_ani_align_fraction_query
+                and af_r_val >= min_ani_align_fraction_ref
+            ):
+
                 valid_neighbors[q].add(r)
                 valid_neighbors[r].add(q)
         except (ValueError, TypeError):
@@ -72,7 +97,7 @@ def define_groups_by_similarity(
     # Build detailed metadata summary payloads
     # ---------------------------------------------------------
     json_payload = []
-    
+
     for i, group_seqs in enumerate(groups, start=1):
         ani_values = []
         if len(group_seqs) > 1:
@@ -88,13 +113,15 @@ def define_groups_by_similarity(
         max_val = max(ani_values) if ani_values else None
         avg_val = sum(ani_values) / len(ani_values) if ani_values else None
 
-        json_payload.append({
-            "group_id": f"similarity_group_{i:04d}",
-            "sequences": group_seqs,
-            "min_ani": min_val,
-            "max_ani": max_val,
-            "avg_ani": avg_val
-        })
+        json_payload.append(
+            {
+                "group_id": f"similarity_group_{i:04d}",
+                "sequences": group_seqs,
+                "min_ani": min_val,
+                "max_ani": max_val,
+                "avg_ani": avg_val,
+            }
+        )
 
     outfile = outdir / "skani_results" / "similarity_groups.json"
     outfile.parent.mkdir(parents=True, exist_ok=True)
