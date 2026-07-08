@@ -170,6 +170,7 @@ def run_pipeline(args):
     }
 
     # refseq-plasmid-dl Options
+    # TODO : add these to database download function
     refseq_opts = {
         "db": args.refseq_plasmid_dl_db,
         "organism": args.refseq_organism,

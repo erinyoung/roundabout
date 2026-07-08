@@ -4,14 +4,6 @@ import pandas as pd
 from pathlib import Path
 import logging
 
-import warnings
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-from pathlib import Path
-import logging
-
-
 def visualize_as_heatmap(matrix_df: pd.DataFrame, out_path: Path):
     """
     Visualizes the square skani matrix using hierarchical clustering.

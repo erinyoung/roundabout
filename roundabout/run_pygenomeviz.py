@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import matplotlib as mpl
+import matplotlib.colors as mcolors
 
 from scipy.cluster.hierarchy import linkage, leaves_list
 from scipy.spatial.distance import squareform
@@ -439,9 +441,6 @@ def run_pygenomeviz_pmauve(
             name2blocks[ac.ref_name].append(ac.ref_block)
 
     # 5. Build Global Coordinates-to-Color Map
-    import matplotlib.cm as cm
-    import matplotlib.colors as mcolors
-
     # Gather all unique blocks across the entire genome to establish color groups
     all_unique_blocks = set()
     for blocks in name2blocks.values():
@@ -452,7 +451,7 @@ def run_pygenomeviz_pmauve(
     num_unique_blocks = len(sorted_unique_blocks)
 
     # Map each physical block boundary to a consistent rainbow color
-    cmap = cm.get_cmap(block_cmap)
+    cmap = mpl.colormaps[block_cmap]
     block2color = {}
     for idx, b_coords in enumerate(sorted_unique_blocks):
         norm_val = idx / (num_unique_blocks - 1) if num_unique_blocks > 1 else 0.0

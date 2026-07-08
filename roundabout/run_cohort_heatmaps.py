@@ -1,10 +1,8 @@
 import logging
 from pathlib import Path
 import pandas as pd
-import numpy as np
 
 from .run_visualize_similarity import visualize_as_heatmap
-
 
 def run_cohort_heatmaps(
     pipeline_groups: dict,
