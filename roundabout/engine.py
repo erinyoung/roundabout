@@ -29,6 +29,7 @@ from .run_minkemap import run_minkemap_cohorts
 from .run_daisyblast import run_daisyblast_cohorts
 from .run_cohort_heatmaps import run_cohort_heatmaps
 from .run_pygenomeviz import run_pygenomeviz
+from .run_nucmer import run_nucmer_cohorts
 
 
 def stage_and_split_fastas(
@@ -161,6 +162,10 @@ def run_pipeline(args):
         "options": args.amrfinder_options,
     }
 
+    # NUCMER options
+    # TODO : Fill in nucmer opts
+    nucmer_opts = {}
+
     # PlasmidFinder Options
     plasmidfinder_opts = {
         "db": args.plasmidfinder_db,
@@ -237,6 +242,8 @@ def run_pipeline(args):
         "min_identity": args.minkemap_min_identity,
         "min_coverage": args.minkemap_min_coverage,
     }
+
+    nucmer_opts = {}
 
     # Heatcluster Options
     # heatcluster_opts = {
@@ -793,7 +800,13 @@ def run_pipeline(args):
         )
 
     # TODO: create nucmer comparisions of each cohort with and without references to generate visualizations
-    # TODO: get heatmap of nucmer visualization
+    # TODO: get SNP matrix of core genome SNPs
+    run_nucmer_cohorts(
+        pipeline_groups=pipeline_groups,
+        fasta_map=fasta_map,
+        outdir=outdir,
+        nucmer_opts=nucmer_opts
+    )
 
     run_cohort_heatmaps(
         pipeline_groups=pipeline_groups,
