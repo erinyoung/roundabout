@@ -45,7 +45,7 @@ jobs:
         # Run roundabout using your test FASTAs and pass Bakta-specific metadata
         roundabout -f test -o test_results \
           --skip-db \
-          --bakta-db test_bakta_db \
+          --bakta-db test_bakta_db/db-light \
           --bakta-genus "Escherichia" \
           --bakta-species "coli" \
           --bakta-locus "testloc" \
