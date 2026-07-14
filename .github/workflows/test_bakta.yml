@@ -38,7 +38,7 @@ jobs:
       run: |
         # Download the Bakta light database (~1.5GB) into a specific folder
         # We use the native tool to bypass roundabout's global setup
-        bakta_db download --type light --db test_bakta_db
+        bakta_db download --type light --output test_bakta_db
 
     - name: Test Roundabout CLI (Bakta Focus)
       run: |
