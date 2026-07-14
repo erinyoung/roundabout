@@ -4,6 +4,7 @@ import pandas as pd
 
 from .run_visualize_similarity import visualize_as_heatmap
 
+
 def run_cohort_heatmaps(
     pipeline_groups: dict,
     local_matrix_df: pd.DataFrame,
@@ -16,6 +17,10 @@ def run_cohort_heatmaps(
       1. A square Local-vs-Local matrix using local_matrix_df.
       2. A rectangular Input-vs-RefSeq matrix using global_hits_df.
     """
+
+    # Define clean_id globally within the function so it's always available
+    def clean_id(val):
+        return Path(str(val)).stem.split(".")[0].strip()
 
     # -----------------------------------------------------------------
     # Prep Local Matrix
@@ -31,9 +36,6 @@ def run_cohort_heatmaps(
         df_clean = global_hits_df.copy()
         df_clean.columns = [c.lower() for c in df_clean.columns]
         df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()]
-
-        def clean_id(val):
-            return Path(str(val)).stem.split(".")[0].strip()
 
         df_clean["query_clean"] = df_clean["query_name"].apply(clean_id)
         df_clean["ref_clean"] = df_clean["refseq_hit"].apply(clean_id)

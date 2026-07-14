@@ -6,15 +6,30 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import seaborn as sns
 
 
+from Bio import SeqIO
+
+
+def get_cds_coords_from_gbk(gbk_path: str) -> list:
+    """Parses a GenBank file and returns a list of (start, end) tuples for all CDS features."""
+    coords = []
+
+    for record in SeqIO.parse(gbk_path, "genbank"):
+        for feature in record.features:
+            if feature.type == "CDS":
+                # Biopython uses 0-based indexing, so we cast to standard 1-based coordinates
+                start = int(feature.location.start) + 1
+                end = int(feature.location.end)
+                coords.append((start, end))
+
+    return coords
+
+
 def visualize_nucmer_heatmap(
-    matrix_df: pd.DataFrame, 
-    out_path: Path, 
-    metric_type: str = "identity"
+    matrix_df: pd.DataFrame, out_path: Path, metric_type: str = "identity"
 ):
     """
     Visualizes pairwise nucmer metrics using hierarchical clustering.
@@ -36,12 +51,12 @@ def visualize_nucmer_heatmap(
         cmap = "viridis"
     elif metric_type == "coverage":
         cbar_label = "Alignment Coverage (%)"
-        vmin, vmax = 0, 100   # Plasmids can vary wildly in coverage length
+        vmin, vmax = 0, 100  # Plasmids can vary wildly in coverage length
         cmap = "magma"
     elif metric_type == "snps":
         cbar_label = "SNP Count"
-        vmin, vmax = None, None # Automatically scale based on the data minimum/maximum
-        cmap = "rocket_r"      # Reverted so more SNPs = hotter color
+        vmin, vmax = None, None  # Automatically scale based on the data minimum/maximum
+        cmap = "rocket_r"  # Reverted so more SNPs = hotter color
     else:
         cbar_label = metric_type
         vmin, vmax = None, None
@@ -61,9 +76,7 @@ def visualize_nucmer_heatmap(
             cbar_pos=(1.02, 0.15, 0.03, 0.7),
         )
     except (FloatingPointError, ValueError) as e:
-        logging.warning(
-            f"Clustering failed ({e}). Plotting unclustered fallback."
-        )
+        logging.warning(f"Clustering failed ({e}). Plotting unclustered fallback.")
         cg = sns.clustermap(
             matrix_df,
             cmap=cmap,
@@ -84,80 +97,135 @@ def visualize_nucmer_heatmap(
     cg.ax_heatmap.set_xlabel("")
     cg.ax_heatmap.set_ylabel("")
 
-    plt.setp(cg.ax_heatmap.get_xticklabels(), rotation=45, ha="right", fontsize=max(8, 12 - (num_seqs // 10)))
-    plt.setp(cg.ax_heatmap.get_yticklabels(), rotation=0, fontsize=max(8, 12 - (num_seqs // 10)))
+    plt.setp(
+        cg.ax_heatmap.get_xticklabels(),
+        rotation=45,
+        ha="right",
+        fontsize=max(8, 12 - (num_seqs // 10)),
+    )
+    plt.setp(
+        cg.ax_heatmap.get_yticklabels(),
+        rotation=0,
+        fontsize=max(8, 12 - (num_seqs // 10)),
+    )
 
-    cg.figure.suptitle(f"Cohort Pairwise Comparison: {metric_type.title()}", y=1.02, fontsize=14)
+    cg.figure.suptitle(
+        f"Cohort Pairwise Comparison: {metric_type.title()}", y=1.02, fontsize=14
+    )
 
     cg.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
 
 
-def parse_delta_with_snps(delta_path: str) -> int:
+def parse_delta_with_snps(
+    delta_path: str, cds_coords: Optional[List[tuple]] = None
+) -> dict:
     """
-    Runs show-snps on a delta file and returns the total number of SNPs 
-    between the reference and query.
+    Runs show-snps on a delta file and returns both the total number of SNPs
+    and the number of SNPs falling within the provided CDS coordinates.
     """
-    # -T makes it tab-delimited, -H suppresses the header rows
     cmd = ["show-snps", "-T", "-H", delta_path]
-    
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         stdout_clean = result.stdout.strip()
         if not stdout_clean:
-            return 0
-        # Each line represents a single SNP position
-        return len(stdout_clean.split("\n"))
+            return {"total_snps": 0, "coding_snps": 0}
+
+        lines = stdout_clean.split("\n")
+        total_snps = len(lines)
+        coding_snps = 0
+
+        # Filter for coding SNPs if coordinates are provided
+        if cds_coords:
+            for line in lines:
+                parts = line.split("\t")
+                if not parts:
+                    continue
+
+                snp_pos = int(parts[0])
+                # Check if SNP falls in any CDS region
+                if any(start <= snp_pos <= end for start, end in cds_coords):
+                    coding_snps += 1
+
+        return {"total_snps": total_snps, "coding_snps": coding_snps}
+
     except subprocess.CalledProcessError as e:
         logging.error(f"show-snps failed for {delta_path}: {e.stderr}")
-        return 0
+        return {"total_snps": 0, "coding_snps": 0}
     except FileNotFoundError:
         logging.error("show-snps command not found. Ensure MUMmer is in your PATH.")
-        return 0
+        return {"total_snps": 0, "coding_snps": 0}
 
-def build_matrices_for_group(group_id: str, sequence_ids: list, group_outdir: str):
+
+def build_matrices_for_group(
+    group_id: str,
+    sequence_ids: list,
+    group_outdir: str,
+    cds_map: Optional[Dict[str, List[tuple]]] = None,
+):
     """
-    Parses all delta files for a specific group and constructs square DataFrames
-    for Identity, Coverage, and SNP counts.
+    Parses delta files and constructs square DataFrames for Identity, Coverage,
+    Total SNPs, and Coding SNPs.
     """
     df_identity = pd.DataFrame(100.0, index=sequence_ids, columns=sequence_ids)
     df_coverage = pd.DataFrame(100.0, index=sequence_ids, columns=sequence_ids)
-    df_snps = pd.DataFrame(0, index=sequence_ids, columns=sequence_ids)  # 0 SNPs against self
+    df_total_snps = pd.DataFrame(0, index=sequence_ids, columns=sequence_ids)
+    df_coding_snps = pd.DataFrame(0, index=sequence_ids, columns=sequence_ids)
 
     pairs = list(itertools.combinations(sequence_ids, 2))
 
     for seq_a, seq_b in pairs:
         delta_file = os.path.join(group_outdir, f"{seq_a}_vs_{seq_b}.delta")
+
+        # Nucmer is directional. The sequence acting as the reference determines the coordinates.
+        reference_seq = seq_a
+
         if not os.path.exists(delta_file):
             delta_file = os.path.join(group_outdir, f"{seq_b}_vs_{seq_a}.delta")
-            
+            reference_seq = seq_b
+
         if os.path.exists(delta_file):
+            # Fetch coordinates for whichever sequence acted as the reference
+            ref_cds_coords = cds_map.get(reference_seq) if cds_map else None
+
             coords_metrics = parse_delta_with_coords(delta_file)
-            snp_count = parse_delta_with_snps(delta_file)
-            
-            # Identity & SNPs are perfectly bidirectional
-            df_identity.loc[seq_a, seq_b] = df_identity.loc[seq_b, seq_a] = coords_metrics["identity"]
-            df_snps.loc[seq_a, seq_b] = df_snps.loc[seq_b, seq_a] = snp_count
-            
-            # Symmetric average for coverage
-            avg_coverage = (coords_metrics["coverage_ref"] + coords_metrics["coverage_que"]) / 2
-            df_coverage.loc[seq_a, seq_b] = df_coverage.loc[seq_b, seq_a] = avg_coverage
+            snp_metrics = parse_delta_with_snps(delta_file, cds_coords=ref_cds_coords)
+
+            # Populate Identity & Coverage
+            df_identity.loc[seq_a, seq_b] = df_identity.loc[seq_b, seq_a] = (
+                coords_metrics["identity"]
+            )
+            avg_cov = (
+                coords_metrics["coverage_ref"] + coords_metrics["coverage_que"]
+            ) / 2
+            df_coverage.loc[seq_a, seq_b] = df_coverage.loc[seq_b, seq_a] = avg_cov
+
+            # Populate Total and Coding SNPs
+            df_total_snps.loc[seq_a, seq_b] = df_total_snps.loc[seq_b, seq_a] = (
+                snp_metrics["total_snps"]
+            )
+            df_coding_snps.loc[seq_a, seq_b] = df_coding_snps.loc[seq_b, seq_a] = (
+                snp_metrics["coding_snps"]
+            )
         else:
             df_identity.loc[seq_a, seq_b] = df_identity.loc[seq_b, seq_a] = 0.0
             df_coverage.loc[seq_a, seq_b] = df_coverage.loc[seq_b, seq_a] = 0.0
-            df_snps.loc[seq_a, seq_b] = df_snps.loc[seq_b, seq_a] = 0
+            df_total_snps.loc[seq_a, seq_b] = df_total_snps.loc[seq_b, seq_a] = 0
+            df_coding_snps.loc[seq_a, seq_b] = df_coding_snps.loc[seq_b, seq_a] = 0
 
-    return df_identity, df_coverage, df_snps
+    return df_identity, df_coverage, df_total_snps, df_coding_snps
+
 
 def parse_delta_with_coords(delta_path: str) -> dict:
     """
-    Runs show-coords on a delta file and calculates total alignment coverage 
+    Runs show-coords on a delta file and calculates total alignment coverage
     and average identity between the reference and query.
     """
     # Run show-coords with tab-delimited output (-T)
     # -r sorts by ref, -l includes sequence lengths, -c includes coverage
     cmd = ["show-coords", "-T", "-r", "-l", "-c", delta_path]
-    
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as e:
@@ -168,22 +236,22 @@ def parse_delta_with_coords(delta_path: str) -> dict:
         return {"identity": 0.0, "coverage_ref": 0.0, "coverage_que": 0.0}
 
     lines = result.stdout.strip().split("\n")
-    
+
     # Find where the data actually starts (skipping MUMmer headers)
     data_start_idx = 0
     for i, line in enumerate(lines):
         if line.startswith("NUCMER") or line.startswith("[S1]"):
             data_start_idx = i + 1
             continue
-            
+
     data_lines = lines[data_start_idx:]
     if not data_lines:
         return {"identity": 0.0, "coverage_ref": 0.0, "coverage_que": 0.0}
 
     total_iden = 0.0
     total_aln_len = 0
-    
-    # We track covered positions using sets to accurately handle multiple 
+
+    # We track covered positions using sets to accurately handle multiple
     # overlapping alignment blocks without double-counting coverage.
     ref_covered_bases = set()
     que_covered_bases = set()
@@ -194,14 +262,14 @@ def parse_delta_with_coords(delta_path: str) -> dict:
         parts = line.split("\t")
         if len(parts) < 13:
             continue
-            
+
         # show-coords -T layout:
         # [S1] [E1] [S2] [E2] [LEN 1] [LEN 2] [% IDY] [LEN R] [LEN Q] [% COV R] [% COV Q] [TAG R] [TAG Q]
         s1, e1 = sorted([int(parts[0]), int(parts[1])])
         s2, e2 = sorted([int(parts[2]), int(parts[3])])
         aln_len_ref = int(parts[4])
         identity = float(parts[6])
-        
+
         ref_len = max(ref_len, int(parts[7]))
         que_len = max(que_len, int(parts[8]))
 
@@ -223,9 +291,8 @@ def parse_delta_with_coords(delta_path: str) -> dict:
     return {
         "identity": weighted_identity,
         "coverage_ref": coverage_ref,
-        "coverage_que": coverage_que
+        "coverage_que": coverage_que,
     }
-
 
 
 def run_nucmer_cohorts(
@@ -235,7 +302,7 @@ def run_nucmer_cohorts(
     nucmer_opts: Optional[str] = "",
 ) -> None:
     """Runs MUMmer's nucmer tool, parses metrics, and builds pairwise heatmaps."""
-    
+
     # Process nucmer options safely
     opts_list = [opt for opt in (nucmer_opts or "").split(" ") if opt]
 
@@ -244,8 +311,7 @@ def run_nucmer_cohorts(
             f"Processing Nucmer visualizations for {group_id} ({len(sequence_ids)} members)..."
         )
 
-        group_dir = Path(outdir) / group_id
-        local_analysis_dir = group_dir / "nucmer_results" 
+        local_analysis_dir = Path(outdir) / group_id / "nucmer_results"
         local_analysis_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate all unique pairs within the group (n choose 2)
@@ -257,17 +323,15 @@ def run_nucmer_cohorts(
 
             if not path_a or not path_b:
                 missing = seq_a if not path_a else seq_b
-                logging.warning(f"[Warning] Skipping pair {seq_a} <-> {seq_b}: '{missing}' not found in fasta_map.")
+                logging.warning(
+                    f"[Warning] Skipping pair {seq_a} <-> {seq_b}: '{missing}' not found in fasta_map."
+                )
                 continue
 
             out_prefix = os.path.join(local_analysis_dir, f"{seq_a}_vs_{seq_b}")
 
             # Added the opts_list into the command stream
-            command = (
-                ["nucmer"]
-                + opts_list
-                + ["--prefix", out_prefix, path_a, path_b]
-            )
+            command = ["nucmer"] + opts_list + ["--prefix", out_prefix, path_a, path_b]
 
             try:
                 subprocess.run(
@@ -285,30 +349,35 @@ def run_nucmer_cohorts(
                     "[Critical] 'nucmer' command not found. Is MUMmer installed and in your PATH?"
                 )
                 return
-            
- # --- Visualization & Export Step (Inside the main group loop) ---
+
+        # --- Visualization & Export Step (Inside the main group loop) ---
         logging.info(f"Building matrices, CSVs, and heatmaps for {group_id}...")
-        
+
         # Unpack all three dataframes now
-        df_id, df_cov, df_snps = build_matrices_for_group(group_id, sequence_ids, str(local_analysis_dir))
-        
+        # TODO : limit SNPs to CDS
+        df_id, df_cov, df_snps, df_cds_snps = build_matrices_for_group(
+            group_id, sequence_ids, str(local_analysis_dir)
+        )
+
         # Define output file destinations
-        id_csv_path = group_dir / f"{group_id}_identity_matrix.csv"
-        cov_csv_path = group_dir / f"{group_id}_coverage_matrix.csv"
-        snps_csv_path = group_dir / f"{group_id}_snps_matrix.csv"
-        
-        id_heatmap_path = group_dir / f"{group_id}_identity_heatmap.png"
-        cov_heatmap_path = group_dir / f"{group_id}_coverage_heatmap.png"
-        snps_heatmap_path = group_dir / f"{group_id}_snps_heatmap.png"
-        
+        id_csv_path = local_analysis_dir / f"{group_id}_identity_matrix.csv"
+        cov_csv_path = local_analysis_dir / f"{group_id}_coverage_matrix.csv"
+        snps_csv_path = local_analysis_dir / f"{group_id}_snps_matrix.csv"
+
+        id_heatmap_path = local_analysis_dir / f"{group_id}_identity_heatmap.png"
+        cov_heatmap_path = local_analysis_dir / f"{group_id}_coverage_heatmap.png"
+        snps_heatmap_path = local_analysis_dir / f"{group_id}_snps_heatmap.png"
+
         # 1. EXPORT ALL CSV FILES
         df_id.to_csv(id_csv_path)
         df_cov.to_csv(cov_csv_path)
         df_snps.to_csv(snps_csv_path)
-        
+
         # 2. GENERATE ALL HEATMAPS
         visualize_nucmer_heatmap(df_id, id_heatmap_path, metric_type="identity")
         visualize_nucmer_heatmap(df_cov, cov_heatmap_path, metric_type="coverage")
         visualize_nucmer_heatmap(df_snps, snps_heatmap_path, metric_type="snps")
-        
-        logging.info(f"Identity, Coverage, and SNP data fully processed for {group_id}!\n")
+
+        logging.info(
+            f"Identity, Coverage, and SNP data fully processed for {group_id}!\n"
+        )

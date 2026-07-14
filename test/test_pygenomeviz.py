@@ -5,8 +5,9 @@ from unittest.mock import patch, MagicMock
 from roundabout.run_pygenomeviz import (
     run_pygenomeviz_blast,
     run_pygenomeviz_pmauve,
-    run_pygenomeviz_mmseqs
+    run_pygenomeviz_mmseqs,
 )
+
 
 @patch("roundabout.run_pygenomeviz.Blast")
 @patch("roundabout.run_pygenomeviz.Genbank")
@@ -14,12 +15,12 @@ from roundabout.run_pygenomeviz import (
 @patch("roundabout.run_pygenomeviz.render_links_and_save")
 @patch("roundabout.run_pygenomeviz.AlignCoord")
 def test_run_pygenomeviz_blast_gbff(
-    mock_aligncoord, 
-    mock_render, 
-    mock_initial_canvas, 
-    mock_genbank, 
-    mock_blast, 
-    tmp_path
+    mock_aligncoord,
+    mock_render,
+    mock_initial_canvas,
+    mock_genbank,
+    mock_blast,
+    tmp_path,
 ):
     """Tests the protein BLAST module workflow with GBFF input tracking."""
     dummy_gbks = [Path("sample1.gbff"), Path("sample2.gbff")]
@@ -31,7 +32,7 @@ def test_run_pygenomeviz_blast_gbff(
     mock_genbank.return_value = mock_gbk_obj
     mock_canvas_instance = MagicMock()
     mock_initial_canvas.return_value = mock_canvas_instance
-    
+
     # Setup dummy coordinate object
     mock_coord = MagicMock()
     mock_coord.identity = 95.0
@@ -43,18 +44,19 @@ def test_run_pygenomeviz_blast_gbff(
 
     # Execute
     run_pygenomeviz_blast(
-        input_paths=dummy_gbks, 
-        out_path=out_path, 
-        file_type='gbff', 
-        pgv_opts=pgv_opts
+        input_paths=dummy_gbks, out_path=out_path, file_type="gbff", pgv_opts=pgv_opts
     )
 
     # Assertions
     assert mock_genbank.call_count == 2
     mock_initial_canvas.assert_called_once_with(pgv_opts)
     mock_blast.assert_called_once_with([mock_gbk_obj, mock_gbk_obj], seqtype="protein")
-    mock_aligncoord.filter.assert_called_once_with([mock_coord], length_thr=100, identity_thr=30.0)
-    mock_render.assert_called_once_with(mock_canvas_instance, [mock_coord], out_path, pgv_opts, method="blast")
+    mock_aligncoord.filter.assert_called_once_with(
+        [mock_coord], length_thr=100, identity_thr=30.0
+    )
+    mock_render.assert_called_once_with(
+        mock_canvas_instance, [mock_coord], out_path, pgv_opts, method="blast"
+    )
 
 
 @patch("roundabout.run_pygenomeviz.ProgressiveMauve")
@@ -63,12 +65,12 @@ def test_run_pygenomeviz_blast_gbff(
 @patch("roundabout.run_pygenomeviz.render_links_and_save")
 @patch("roundabout.run_pygenomeviz.AlignCoord")
 def test_run_pygenomeviz_pmauve_gbff(
-    mock_aligncoord, 
-    mock_render, 
-    mock_initial_canvas, 
-    mock_genbank, 
-    mock_pmauve, 
-    tmp_path
+    mock_aligncoord,
+    mock_render,
+    mock_initial_canvas,
+    mock_genbank,
+    mock_pmauve,
+    tmp_path,
 ):
     """Tests that progressiveMauve maps out tracking metrics properly."""
     dummy_gbks = [Path("sample1.gbff"), Path("sample2.gbff")]
@@ -79,10 +81,10 @@ def test_run_pygenomeviz_pmauve_gbff(
     mock_gbk_obj = MagicMock()
     mock_gbk_obj.get_seqid2size.return_value = {"seq1": 1000}
     mock_genbank.return_value = mock_gbk_obj
-    
+
     mock_canvas_instance = MagicMock()
     mock_initial_canvas.return_value = mock_canvas_instance
-    
+
     # FIX: Provide a complex object that satisfies Mauve coordinate expectations
     mock_coord = MagicMock()
     mock_coord.query_name = "sample1"
@@ -102,10 +104,7 @@ def test_run_pygenomeviz_pmauve_gbff(
 
     # Execute
     run_pygenomeviz_pmauve(
-        input_paths=dummy_gbks, 
-        out_path=out_path, 
-        file_type='gbff', 
-        pgv_opts=pgv_opts
+        input_paths=dummy_gbks, out_path=out_path, file_type="gbff", pgv_opts=pgv_opts
     )
 
     # Assertions
@@ -119,12 +118,12 @@ def test_run_pygenomeviz_pmauve_gbff(
 @patch("roundabout.run_pygenomeviz.render_links_and_save")
 @patch("roundabout.run_pygenomeviz.AlignCoord")
 def test_run_pygenomeviz_mmseqs_guard_rail(
-    mock_aligncoord, 
-    mock_render, 
-    mock_initial_canvas, 
-    mock_genbank, 
-    mock_mmseqs, 
-    tmp_path
+    mock_aligncoord,
+    mock_render,
+    mock_initial_canvas,
+    mock_genbank,
+    mock_mmseqs,
+    tmp_path,
 ):
     """Tests that MMseqs correctly triggers an early exit if file_type is 'fasta'."""
     dummy_fastas = [Path("sample1.fasta"), Path("sample2.fasta")]
@@ -132,10 +131,7 @@ def test_run_pygenomeviz_mmseqs_guard_rail(
 
     # Execute passing fasta instead of gbff
     run_pygenomeviz_mmseqs(
-        input_paths=dummy_fastas, 
-        out_path=out_path, 
-        file_type='fasta', 
-        pgv_opts={}
+        input_paths=dummy_fastas, out_path=out_path, file_type="fasta", pgv_opts={}
     )
 
     # Assertions

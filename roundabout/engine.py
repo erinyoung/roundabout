@@ -805,7 +805,7 @@ def run_pipeline(args):
         pipeline_groups=pipeline_groups,
         fasta_map=fasta_map,
         outdir=outdir,
-        nucmer_opts=nucmer_opts
+        nucmer_opts=nucmer_opts,
     )
 
     run_cohort_heatmaps(

@@ -37,12 +37,18 @@ def test_define_groups_by_similarity(tmp_path):
         outdir=tmp_path,
     )
 
-   # 4. Assertions: Verify that A and B are grouped together, and C is isolated
-    assert len(groups) == 2, "Should create two separate group lists (one cluster and one singleton)"
-    
+    # 4. Assertions: Verify that A and B are grouped together, and C is isolated
+    assert (
+        len(groups) == 2
+    ), "Should create two separate group lists (one cluster and one singleton)"
+
     # Flatten groups to check tracking, or look at individual groups
     cluster_group = next(g for g in groups if "sampleA_contig1" in g)
     singleton_group = next(g for g in groups if "sampleC_contig1" in g)
-    
-    assert "sampleB_contig1" in cluster_group, "Sample A and Sample B must be clustered together"
-    assert len(singleton_group) == 1, "Sample C should be isolated in a single-element group"
+
+    assert (
+        "sampleB_contig1" in cluster_group
+    ), "Sample A and Sample B must be clustered together"
+    assert (
+        len(singleton_group) == 1
+    ), "Sample C should be isolated in a single-element group"
