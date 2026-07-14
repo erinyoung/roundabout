@@ -8,7 +8,7 @@ from .run_annotation import (
     execute_plasmidfinder_parallel,
     execute_bakta_parallel,
 )
-from .run_grouping_by_similarity import define_groups_by_similarity
+from .run_grouping_by_similarity import define_groups_by_similarity, define_groups_by_ani
 from .run_grouping_by_amr import define_groups_by_amr
 from .run_grouping_by_pf import define_groups_by_plasmidfinder
 from .run_grouping_summary import run_grouping_summary
@@ -648,6 +648,15 @@ def run_pipeline(args):
     # similarity_groups = [['4051899_2', '4051901_2', '4051902_2', '4051903_2', '4051904_2', '4051905_2', '4051906_2', '4051907_2', '4051908_2'], ['4051900_3', '4051904_3', '4051905_3', '4051906_3'], ['4051900_4']]
     # similarity_groups = []
 
+    ani_groups = define_groups_by_ani(
+        raw_skani_df=raw_skani_df,
+        local_matrix_df=local_matrix_df,
+        min_ani=min_ani,
+        min_ani_align_fraction_ref=min_ani_fraction_ref,
+        min_ani_align_fraction_query=min_ani_fraction_query,
+        outdir=outdir,
+    )
+
     logging.info("Creating groups based on AMR gene detection")
     amr_groups = define_groups_by_amr(
         amr_dict, target_gene=args.amr_gene, outdir=outdir
@@ -670,7 +679,7 @@ def run_pipeline(args):
     # -------------------------------------------------------------------------
 
     logging.info("Combining and Deduplicating groups")
-    all_groups = amr_groups + plasmidfinder_groups + similarity_groups
+    all_groups = amr_groups + ani_groups + plasmidfinder_groups + similarity_groups
 
     # Deduplicate by converting to sorted tuples
     unique_groups_set = {tuple(sorted(g)) for g in all_groups}

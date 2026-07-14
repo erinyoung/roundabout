@@ -96,6 +96,7 @@ def define_groups_by_similarity(
     # ---------------------------------------------------------
     # Build detailed metadata summary payloads
     # ---------------------------------------------------------
+    # TODO : redo summary file into something more informative
     json_payload = []
 
     for i, group_seqs in enumerate(groups, start=1):
@@ -131,3 +132,64 @@ def define_groups_by_similarity(
 
     logging.info(f"Wrote {len(groups)} similarity groups to {outfile}")
     return groups
+
+import logging
+from pathlib import Path
+import pandas as pd
+
+def define_groups_by_ani(
+    raw_skani_df: pd.DataFrame,
+    local_matrix_df: pd.DataFrame,
+    min_ani: float,
+    min_ani_align_fraction_query: float,
+    min_ani_align_fraction_ref: float,
+    outdir: Path,
+) -> list[list[str]]:
+    """
+    For each local sample, finds all passing skani matches. 
+    Returns a sorted, deduplicated list of these match lists.
+    """
+    logging.info(
+        f"Defining ANI similarity groups using boundaries: "
+        f">={min_ani}% ANI, >={min_ani_align_fraction_query}% Query AF, >={min_ani_align_fraction_ref}% Ref AF"
+    )
+
+    # 1. Get list of local samples
+    local_samples = set(local_matrix_df.columns) - {"query_name"}
+
+    # 2. Extract clean stems from file paths
+    skani_filtered = raw_skani_df.copy()
+    skani_filtered["parsed_query"] = skani_filtered["Query_file"].apply(lambda x: Path(x).stem)
+    skani_filtered["parsed_ref"] = skani_filtered["Ref_file"].apply(lambda x: Path(x).stem)
+
+    # 3. Keep only rows where both query and ref are local samples
+    skani_filtered = skani_filtered[
+        skani_filtered["parsed_query"].isin(local_samples) & 
+        skani_filtered["parsed_ref"].isin(local_samples)
+    ]
+
+    # 4. Apply metric filters (handling the 0-1 scale of Align_fraction_query)
+    af_query_cutoff = min_ani_align_fraction_query / 100.0 if min_ani_align_fraction_query > 1.0 else min_ani_align_fraction_query
+
+    passing_df = skani_filtered[
+        (skani_filtered["ANI"] >= min_ani) &
+        (skani_filtered["Align_fraction_ref"] >= min_ani_align_fraction_ref) &
+        (skani_filtered["Align_fraction_query"] >= af_query_cutoff)
+    ]
+
+    # 5. Build raw match lists for each sample
+    raw_groups = []
+    for sample in local_samples:
+        # Find all references where this sample is the query
+        matches = passing_df[passing_df["parsed_query"] == sample]["parsed_ref"].tolist()
+        
+        # Combine the sample itself with all its distinct matches
+        full_match_set = {sample}.union(matches)
+        raw_groups.append(tuple(sorted(full_match_set)))
+
+    # 6. Deduplicate lists at the end and sort by size
+    unique_groups = [list(g) for g in set(raw_groups)]
+    unique_groups.sort(key=lambda g: (len(g), g), reverse=True)
+
+    logging.info(f"Found {len(unique_groups)} ANI similarity groups")
+    return unique_groups
