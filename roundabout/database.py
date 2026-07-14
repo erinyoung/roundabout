@@ -56,7 +56,7 @@ def check_bakta_db(db_dir: str):
     version_file = os.path.join(db_dir, "version.json")
 
     if not os.path.exists(bakta_db_file) or not os.path.exists(version_file):
-        logging.error("Bakta database check failed: Missing required files.")
+        logging.error("Bakta database check failed: Missing required files 'bakta.db' or 'version.json'.")
         return None
 
     try:
