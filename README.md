@@ -9,7 +9,7 @@ Tracking the spread of antimicrobial resistance (AMR) and virulence factors duri
 
 **Roundabout** solves this problem by providing an automated, end-to-end pipeline tailored specifically for mobile genetic elements. It takes plasmid assemblies and annotates their features, clusters them based on structural similarity and replicon profiles, compares them to RefSeq plamid databases, and generates comparative visualizations.
 
-
+![MinkeMap Example](assets/minkemap_example_with_refs.png)
 
 ## Quickstart
 
@@ -198,16 +198,25 @@ Once the run completes, explore the `test_results/` directory to see the generat
 
 ***
 
-### Recommended Images for your `assets/` folder
-### Recommended Images for your `assets/` folder
+## Example Visualizations
 
-To really sell the value of your pipeline in the README, you want to show off the visual outputs. Bioinformatics tools are often judged by the quality of the figures they produce for publications. I recommend generating and embedding these four specific images:
+Roundabout automatically generates publication-ready figures for your plasmid cohorts.
 
-1. **The PyGenomeViz Linear Synteny Plot:** Show a comparison of 2 or 3 plasmids from a single cohort. This highlights the tool's ability to visualize structural rearrangements, inversions, and conserved gene blocks (especially AMR genes).
-2. **The MinkeMap Circular Plot:** Circular alignments are visually striking and perfect for plasmids. Show a plot featuring the reference backbone, GC skew, and the mapped sequence tracks.
-3. **The Skani ANI Clustermap:** Show the `local_ani_clustermap.png` (the square heatmap with the dendrogram). This instantly communicates that the tool can take a messy folder of FASTAs and cleanly separate them into distinct outbreak clusters.
-4. **The Skani Global Scatter Plot:** Show the `global_ani_scatter.png` to demonstrate how the pipeline places local isolates into the context of the global NCBI RefSeq database.
+**1. PyGenomeViz Linear Synteny Plot**
+Visualizes structural rearrangements, inversions, and conserved gene blocks (like AMR genes) across a cohort.
+![PyGenomeViz Synteny](assets/pygenomeviz_example_blast_gbff.png)
 
+**2. MinkeMap Circular Plot**
+Maps sequence tracks against a reference backbone to highlight coverage and structural conservation.
+![MinkeMap Circular Alignment](assets/minkemap_example_with_refs.png)
+
+**3. Skani ANI Clustermap**
+Separates mixed FASTAs into distinct outbreak clusters based on Average Nucleotide Identity.
+![Skani ANI Clustermap](assets/skani_example.png)
+
+**4. Skani Global Scatter Plot**
+Places local isolates into the context of the global NCBI RefSeq database.
+![Skani Global Scatter Plot](assets/skani_scatter_with_refs_example.png)
 
 
 ## Understanding the Output
@@ -231,10 +240,53 @@ Here is a breakdown of the key output folders and what they contain:
 
 ### 3. Cohort-Specific Visualizations
 Roundabout processes sequences that group together into isolated cohorts, generating dedicated visualizations for each outbreak cluster.
-* **`synteny_results_gbk/`**: Contains the PyGenomeViz linear alignment plots. These diagrams map the annotated features (like AMR genes and transposons) across the cohort to highlight structural rearrangements and conserved blocks.
-* **`ani_heatmap_results/`**: Contains isolated, cohort-specific distance heatmaps comparing the isolates against themselves and their closest RefSeq matches.
+
+* **`ani_heatmap_results/`**: Contains isolated, cohort-specific distance heatmaps.
 * **`daisyblast_results/`**: Contains the output of the sequence shattering, structural feature grouping, and dotplots for each cohort.
-* **`minkemap_results/`**: Contains circular sequence alignments showing how the cohort maps against a central reference sequence, including GC skew and coverage tracks.
+
+<details>
+  <summary>Click to view daisyblast comparison examples</summary>
+
+### DaisyBlast syteny groups in separate visualizations
+<p align="center">
+  <img src="assets/daisyblast_example_01.png" width="32%" />
+  <img src="assets/daisyblast_example_02.png" width="32%" />
+  <img src="assets/daisyblast_example_03.png" width="32%" />
+</p>
+
+### DaisyBlast mock blast results
+
+<img src="assets/diasyblast_mock_blast_example.png" width="100%" alt="BLAST FASTA">
+
+### DaisyBlast generates combined (shown) and separate dot plots
+
+<img src="assets/diasyblast_combined_dotpot_example.png" width="100%" alt="BLAST FASTA">
+
+</details>
+
+* **`minkemap_results/`**: Contains circular sequence alignments showing how the cohort maps against a central reference sequence.
+
+* **`pygenomeviz_results/`**: Contains syteny maps from fasta and gbff files created by 
+
+<details>
+  <summary>Click to view pygenomeviz comparison examples</summary>
+
+  ### BLAST Comparison (GBFF and FASTA)
+
+  <img src="assets/pygenomeviz_example_blast_gbff.png" width="100%" alt="BLAST GBFF">
+
+  <img src="assets/pygenomeviz_example_blast_fasta.png" width="100%" alt="BLAST FASTA">
+
+  ### MUMmer Comparison (GBFF and FASTA)
+  <img src="assets/pygenomeviz_example_mummer_gbff.png" width="100%" alt="MUMmer GBFF">
+  <img src="assets/pygenomeviz_example_mummer_fasta.png" width="100%" alt="MUMmer FASTA">
+
+  ### MMSEQS (GBFF only)
+  <img src="assets/pygenomeviz_example_mmseqs_gbff.png" width="100%" alt="MMseqs GBFF">
+
+  ### Progressive Mauve (FASTA only)
+  <img src="assets/pygenomeviz_example_pmauve_fasta.png" width="100%" alt="pMauve FASTA">
+</details>
 
 ## Background: From Nextflow to Native Python
 
