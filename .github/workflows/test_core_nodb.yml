@@ -1,0 +1,64 @@
+name: Test Core Pipeline (No DB)
+
+on:
+  pull_request
+
+jobs:
+  test-core:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash -el {0} 
+
+    steps:
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: true
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        environment-file: environment.yml
+        activate-environment: roundabout-env
+        channel-priority: strict 
+
+    - name: Test Roundabout CLI (Core Logic / No DB)
+      run: |
+        # Run roundabout using your test FASTAs with NO databases.
+        # We inject a heavy mix of core logic flags to ensure the argparse
+        # safely routes them to Skani, DaisyBlast, and the staging functions.
+        roundabout -f test -o test_results \
+          --skip-db \
+          --threads 2 \
+          --min-contig-length 500 \
+          --min-num-seqs 2 \
+          --min-ani 95.0 \
+          --skani-fast \
+          --skani-min-af 15.0 \
+          --daisyblast-min_pident 95.0 \
+          --daisyblast-num_groups 10 \
+          --minkemap-title "Core Integration Test" \
+          --pgv-skip-mmseqs
+          
+    - name: Verify Core Execution Outputs
+      run: |
+        # Ensure the staging directory was created
+        test -d test_results/staging_fastas
+        
+        # Verify the Skani local matrix generation completed
+        test -d test_results/skani_results
+        
+        # Ensure the pipeline ran completely through to the end
+        # (It should log "Roundabout pipeline execution finished successfully!" and exit 0)

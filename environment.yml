@@ -1,0 +1,35 @@
+name: roundabout-env
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python >=3.10
+  - pip
+  
+  # Non-Python Bioinformatics CLI Binaries
+  - ncbi-amrfinderplus
+  - blast
+  - skani
+  - minkemap
+  - minimap2
+  - mummer
+  - mmseqs2
+  - kma
+  - progressivemauve
+  
+  # Core Bioinformatics Python Packages (better optimized via Conda)
+  - pandas >=2.0.0
+  - scipy >=1.10.0
+  - pygenomeviz >=1.0.0
+  - bakta >=1.9.0
+  
+  # Testing Tools
+  - pytest
+  - pytest-cov
+  
+  # Fallback to pip for your PyPI-only packages and installing roundabout itself
+  - pip:
+    - daisyblast
+    - refseq-plasmid-dl
+    - plasmidfinder
+    - -e .

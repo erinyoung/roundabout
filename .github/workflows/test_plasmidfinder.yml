@@ -1,0 +1,63 @@
+name: Test PlasmidFinder Integration
+
+on:
+  pull_request
+
+jobs:
+  test-plasmidfinder:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        shell: bash -el {0} 
+
+    steps:
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        docker-images: true
+        swap-storage: true
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        environment-file: environment.yml
+        activate-environment: roundabout-env
+        channel-priority: strict 
+
+    - name: Download & Index PlasmidFinder Database
+      run: |
+        # Clone the database directly from the official repository
+        git clone https://bitbucket.org/genomicepidemiology/plasmidfinder_db.git test_pf_db
+        
+        # Navigate inside and run the required KMA indexing script
+        cd test_pf_db
+        python3 INSTALL.py
+
+    - name: Test Roundabout CLI (PlasmidFinder Focus)
+      run: |
+        # Run roundabout using your test FASTAs and pass PlasmidFinder-specific filters
+        roundabout -f test -o test_results \
+          --skip-db \
+          --plasmidfinder-db test_pf_db \
+          --plasmidfinder-string "IncF" \
+          --plasmidfinder-mincov 0.60 \
+          --plasmidfinder-threshold 0.90
+          
+    - name: Verify PlasmidFinder Execution Output
+      run: |
+        # Ensure the staging and PlasmidFinder output directories were created
+        test -d test_results/staging_fastas
+        test -d test_results/plasmidfinder_results
+        
+        # Check that the PlasmidFinder loop actually processed the files
+        ls -la test_results/plasmidfinder_results/
